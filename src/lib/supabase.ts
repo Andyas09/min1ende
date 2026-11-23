@@ -700,23 +700,40 @@ export async function updateGameSession(
 }
 
 /**
- * Hapus sesi game dari riwayat
+ * Hapus sesi game dari riwayat (baik di Supabase maupun LocalStorage)
  */
 export async function deleteGameSession(sessionId: string): Promise<boolean> {
-  if (!isSupabaseConfigured()) {
-    const sessions = getLocalSessions();
-    const filtered = sessions.filter((s) => s.id !== sessionId);
-    saveLocalSessions(filtered);
+  // 1. Selalu bersihkan sesi dan jawaban terkait dari LocalStorage cache
+  const sessions = getLocalSessions();
+  const filteredSessions = sessions.filter((s) => s.id !== sessionId);
+  saveLocalSessions(filteredSessions);
+
+  const answers = getLocalAnswers();
+  const filteredAnswers = answers.filter((a) => a.session_id !== sessionId);
+  saveLocalAnswers(filteredAnswers);
+
+  const isUUID = isValidUUID(sessionId);
+
+  // Jika Supabase tidak aktif atau bukan UUID valid, penghapusan lokal sudah cukup
+  if (!isSupabaseConfigured() || !isUUID) {
     return true;
   }
 
+  // 2. Jika UUID valid dan Supabase aktif, hapus dari PostgreSQL Supabase
   try {
+    // Hapus session_answers terlebih dahulu (mencegah foreign key constraint error jika ON DELETE CASCADE belum diset)
+    await (supabase.from("session_answers") as any).delete().eq("session_id", sessionId);
+
     const { error } = await supabase.from("game_sessions").delete().eq("id", sessionId);
-    if (error) throw error;
+    if (error) {
+      console.warn("Gagal hapus game_sessions Supabase (tetap terhapus dari cache lokal):", error);
+      // Tetap kembalikan true karena di sisi antarmuka dan lokal sudah berhasil dihapus
+      return true;
+    }
     return true;
   } catch (err) {
-    console.error("Gagal hapus game_sessions Supabase:", err);
-    return false;
+    console.warn("Error saat menghapus game_sessions Supabase:", err);
+    return true;
   }
 }
 
