@@ -31,6 +31,31 @@ const LOCAL_STORAGE_QUESTIONS_KEY = "sd_match_questions_cache";
 const LOCAL_STORAGE_SUBJECTS_KEY = "sd_match_subjects_cache";
 const LOCAL_STORAGE_SESSIONS_KEY = "sd_match_sessions_cache";
 const LOCAL_STORAGE_ANSWERS_KEY = "sd_match_answers_cache";
+const LOCAL_STORAGE_DELETED_SESSIONS_KEY = "sd_match_deleted_sessions";
+
+function getDeletedSessionIds(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(LOCAL_STORAGE_DELETED_SESSIONS_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {
+    console.warn("Gagal membaca deleted sessions:", e);
+  }
+  return [];
+}
+
+function markSessionAsDeleted(sessionId: string) {
+  if (typeof window === "undefined") return;
+  try {
+    const current = getDeletedSessionIds();
+    if (!current.includes(sessionId)) {
+      current.push(sessionId);
+      localStorage.setItem(LOCAL_STORAGE_DELETED_SESSIONS_KEY, JSON.stringify(current));
+    }
+  } catch (e) {
+    console.warn("Gagal menyimpan deleted session:", e);
+  }
+}
 
 function getLocalSubjects(): SubjectItem[] {
   if (typeof window === "undefined") return DEFAULT_SUBJECTS;
@@ -703,7 +728,9 @@ export async function updateGameSession(
  * Hapus sesi game dari riwayat (baik di Supabase maupun LocalStorage)
  */
 export async function deleteGameSession(sessionId: string): Promise<boolean> {
-  // 1. Selalu bersihkan sesi dan jawaban terkait dari LocalStorage cache
+  // 1. Selalu catat di daftar deleted sessions dan bersihkan dari cache LocalStorage
+  markSessionAsDeleted(sessionId);
+
   const sessions = getLocalSessions();
   const filteredSessions = sessions.filter((s) => s.id !== sessionId);
   saveLocalSessions(filteredSessions);
@@ -721,14 +748,10 @@ export async function deleteGameSession(sessionId: string): Promise<boolean> {
 
   // 2. Jika UUID valid dan Supabase aktif, hapus dari PostgreSQL Supabase
   try {
-    // Hapus session_answers terlebih dahulu (mencegah foreign key constraint error jika ON DELETE CASCADE belum diset)
     await (supabase.from("session_answers") as any).delete().eq("session_id", sessionId);
-
     const { error } = await supabase.from("game_sessions").delete().eq("id", sessionId);
     if (error) {
-      console.warn("Gagal hapus game_sessions Supabase (tetap terhapus dari cache lokal):", error);
-      // Tetap kembalikan true karena di sisi antarmuka dan lokal sudah berhasil dihapus
-      return true;
+      console.warn("Catatan hapus game_sessions Supabase (RLS atau batasan):", error.message);
     }
     return true;
   } catch (err) {
@@ -779,20 +802,24 @@ export async function saveSessionAnswer(answerData: SessionAnswerInsert): Promis
  * Ambil daftar semua sesi game (Assessment Report) beserta detail jawaban
  */
 export async function getGameSessionsReport(): Promise<GameSession[]> {
+  const deletedIds = getDeletedSessionIds();
+
   if (!isSupabaseConfigured()) {
     const sessions = getLocalSessions();
     const answers = getLocalAnswers();
     const questions = getLocalQuestions();
 
-    const mapped = sessions.map((s) => ({
-      ...s,
-      answers: answers
-        .filter((a) => a.session_id === s.id)
-        .map((a) => ({
-          ...a,
-          question: questions.find((q) => q.id === a.question_id),
-        })),
-    }));
+    const mapped = sessions
+      .filter((s) => !deletedIds.includes(s.id))
+      .map((s) => ({
+        ...s,
+        answers: answers
+          .filter((a) => a.session_id === s.id)
+          .map((a) => ({
+            ...a,
+            question: questions.find((q) => q.id === a.question_id),
+          })),
+      }));
 
     // Saring sesi hantu (in_progress kosong tanpa jawaban)
     return mapped.filter(
@@ -814,14 +841,17 @@ export async function getGameSessionsReport(): Promise<GameSession[]> {
 
     if (error) throw error;
 
-    // Filter agar sesi kosong tanpa jawaban tidak mengotori tabel asesmen guru
+    // Filter agar sesi kosong tanpa jawaban serta sesi yang sudah dihapus tidak muncul
     const list = (data || []) as GameSession[];
     return list.filter(
-      (s) => s.status !== "in_progress" || (s.answers && s.answers.length > 0) || Number(s.final_score) > 0
+      (s) =>
+        !deletedIds.includes(s.id) &&
+        (s.status !== "in_progress" || (s.answers && s.answers.length > 0) || Number(s.final_score) > 0)
     );
   } catch (err) {
     console.warn("Gagal query assessment report di Supabase, fallback lokal:", err);
-    return getLocalSessions();
+    const sessions = getLocalSessions();
+    return sessions.filter((s) => !deletedIds.includes(s.id));
   }
 }
 

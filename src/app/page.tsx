@@ -10,7 +10,7 @@ import { StudentRegistrationForm } from "@/components/game/StudentRegistration";
 import { GameArena } from "@/components/game/GameArena";
 import { GameResultScreen } from "@/components/game/GameResultScreen";
 import { StudentRegistration, GameSession, ScoreBreakdown } from "@/types";
-import { createGameSession, getFilteredQuestions } from "@/lib/supabase";
+import { createGameSession, getFilteredQuestions, supabase, isSupabaseConfigured } from "@/lib/supabase";
 
 export default function HomePage() {
   // Navigation / View State
@@ -18,7 +18,7 @@ export default function HomePage() {
   const [isRulesOpen, setIsRulesOpen] = useState(false);
   const [isTeacherAuthOpen, setIsTeacherAuthOpen] = useState(false);
 
-  // Teacher State
+  // Teacher State: Disimpan di localStorage agar saat halaman di-reload tidak keluar otomatis
   const [teacherInfo, setTeacherInfo] = useState<{ email: string; name: string } | null>(null);
   const [roomCode, setRoomCode] = useState("MIN1-ENDE");
   const [timerLimits, setTimerLimits] = useState({
@@ -26,6 +26,25 @@ export default function HomePage() {
     Medium: 360,
     HOTS: 420,
   });
+
+  // Pulihkan sesi login guru saat browser di-refresh
+  React.useEffect(() => {
+    try {
+      const savedTeacher = localStorage.getItem("sd_match_teacher_session");
+      if (savedTeacher) {
+        const parsed = JSON.parse(savedTeacher);
+        if (parsed?.email) {
+          setTeacherInfo(parsed);
+          const lastView = localStorage.getItem("sd_match_last_view");
+          if (lastView === "teacher") {
+            setCurrentView("teacher");
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Gagal membaca sesi guru:", e);
+    }
+  }, []);
 
   // Student Game State: 'register' | 'playing' | 'result'
   const [gameState, setGameState] = useState<"register" | "playing" | "result">("register");
@@ -42,20 +61,37 @@ export default function HomePage() {
         setIsTeacherAuthOpen(true);
       } else {
         setCurrentView("teacher");
+        localStorage.setItem("sd_match_last_view", "teacher");
       }
     } else {
       setCurrentView("student");
+      localStorage.setItem("sd_match_last_view", "student");
     }
   };
 
   const handleTeacherLoginSuccess = (info: { email: string; name: string }) => {
     setTeacherInfo(info);
     setCurrentView("teacher");
+    try {
+      localStorage.setItem("sd_match_teacher_session", JSON.stringify(info));
+      localStorage.setItem("sd_match_last_view", "teacher");
+    } catch (e) {
+      console.warn("Gagal menyimpan sesi guru ke localStorage:", e);
+    }
   };
 
-  const handleTeacherLogout = () => {
+  const handleTeacherLogout = async () => {
     setTeacherInfo(null);
     setCurrentView("student");
+    try {
+      localStorage.removeItem("sd_match_teacher_session");
+      localStorage.setItem("sd_match_last_view", "student");
+      if (isSupabaseConfigured()) {
+        await supabase.auth.signOut();
+      }
+    } catch (e) {
+      console.warn("Gagal logout:", e);
+    }
   };
 
   // Student Game Flow: Tepat 1 kali pembuatan sesi saat tombol Mulai ditekan
