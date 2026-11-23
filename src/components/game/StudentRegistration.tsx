@@ -513,7 +513,7 @@ export function StudentRegistrationForm({
               <span>6. Pilih Tingkat Kesulitan Permainan</span>
             </label>
 
-            <div className="grid grid-cols-3 gap-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               {(
                 [
                   {
@@ -569,13 +569,13 @@ export function StudentRegistrationForm({
                     onClick={() => setDifficulty(opt.lvl)}
                     className={`group relative cursor-pointer rounded-3xl border-2 transition-all overflow-hidden select-none ${
                       isSelected
-                        ? `${opt.borderActive} ring-2 shadow-xl ${opt.glowColor} scale-[1.02]`
+                        ? `${opt.borderActive} ring-2 shadow-xl ${opt.glowColor} scale-[1.01] sm:scale-[1.02]`
                         : `${opt.borderInactive} ${opt.bgInactive} shadow-sm hover:shadow-md`
                     }`}
                   >
                     {/* Kartu Berwarna Gradient untuk yang terpilih */}
                     <div
-                      className={`p-4 sm:p-5 flex flex-col items-center text-center gap-2 transition-all ${
+                      className={`p-3.5 sm:p-5 flex flex-row sm:flex-col items-center sm:text-center gap-3 sm:gap-2 transition-all ${
                         isSelected
                           ? `bg-gradient-to-b ${opt.gradientBg} text-white`
                           : ""
@@ -583,7 +583,7 @@ export function StudentRegistrationForm({
                     >
                       {/* Lingkaran Emoji Indikator */}
                       <div
-                        className={`w-12 h-12 sm:w-14 sm:h-14 rounded-full flex items-center justify-center text-2xl sm:text-3xl transition-transform group-hover:scale-110 ${
+                        className={`w-10 h-10 sm:w-14 sm:h-14 rounded-full flex items-center justify-center text-xl sm:text-3xl shrink-0 transition-transform group-hover:scale-110 ${
                           isSelected
                             ? "bg-white/25 shadow-lg"
                             : "bg-white dark:bg-slate-800 shadow-sm border border-slate-200 dark:border-slate-700"
@@ -592,53 +592,51 @@ export function StudentRegistrationForm({
                         {opt.emoji}
                       </div>
 
-                      {/* Label Level */}
-                      <div>
+                      {/* Label Level & Kode Bloom */}
+                      <div className="flex-1 sm:flex-initial text-left sm:text-center min-w-0">
+                        <div className="flex items-center sm:justify-center gap-1.5 sm:block">
+                          <span
+                            className={`block text-xs sm:text-base font-black tracking-wide ${
+                              isSelected
+                                ? "text-white"
+                                : "text-slate-950 dark:text-slate-50"
+                            }`}
+                          >
+                            {opt.label}
+                          </span>
+                          <span
+                            className={`block text-[10px] sm:text-[11px] font-bold ${
+                              isSelected
+                                ? "text-white/80"
+                                : "text-slate-600 dark:text-slate-400"
+                            }`}
+                          >
+                            ({info.title})
+                          </span>
+                        </div>
                         <span
-                          className={`block text-sm sm:text-base font-black tracking-wide ${
+                          className={`inline-block sm:block sm:w-full py-0.5 sm:py-1.5 px-2 sm:px-0 rounded-lg sm:rounded-xl text-[9px] sm:text-[11px] font-black border mt-1 transition-colors ${
                             isSelected
-                              ? "text-white"
-                              : "text-slate-950 dark:text-slate-50"
+                              ? "bg-white/20 text-white border-white/30"
+                              : `bg-white dark:bg-slate-800 ${opt.textInactive} border-slate-200 dark:border-slate-700`
                           }`}
                         >
-                          {opt.label}
+                          {opt.code}
                         </span>
-                        <span
-                          className={`block text-[10px] sm:text-[11px] font-bold mt-0.5 ${
+                        <p
+                          className={`text-[9px] sm:text-[10px] font-semibold leading-snug mt-1 hidden sm:block ${
                             isSelected
-                              ? "text-white/80"
-                              : "text-slate-600 dark:text-slate-400"
+                              ? "text-white/75"
+                              : "text-slate-500 dark:text-slate-400"
                           }`}
                         >
-                          {info.title}
-                        </span>
+                          {opt.codeSub}
+                        </p>
                       </div>
-
-                      {/* Badge Kode Bloom */}
-                      <span
-                        className={`w-full py-1.5 rounded-xl text-[10px] sm:text-[11px] font-black border transition-colors ${
-                          isSelected
-                            ? "bg-white/20 text-white border-white/30"
-                            : `bg-white dark:bg-slate-800 ${opt.textInactive} border-slate-200 dark:border-slate-700`
-                        }`}
-                      >
-                        {opt.code}
-                      </span>
-
-                      {/* Deskripsi Bloom */}
-                      <p
-                        className={`text-[10px] font-semibold leading-snug ${
-                          isSelected
-                            ? "text-white/75"
-                            : "text-slate-500 dark:text-slate-400"
-                        }`}
-                      >
-                        {opt.codeSub}
-                      </p>
 
                       {/* Indikator Terpilih */}
                       {isSelected && (
-                        <div className="absolute top-2 right-2">
+                        <div className="sm:absolute sm:top-2 sm:right-2 shrink-0">
                           <CheckCircle2 className="w-5 h-5 text-white drop-shadow-md" />
                         </div>
                       )}
