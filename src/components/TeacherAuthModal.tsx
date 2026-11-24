@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import Image from "next/image";
-import { X, Mail, KeyRound, AlertCircle, ArrowRight } from "lucide-react";
+import { X, Mail, KeyRound, AlertCircle, ArrowRight, Eye, EyeOff } from "lucide-react";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase";
 
 interface TeacherAuthModalProps {
@@ -14,6 +14,7 @@ interface TeacherAuthModalProps {
 export function TeacherAuthModal({ isOpen, onClose, onSuccess }: TeacherAuthModalProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -121,13 +122,26 @@ export function TeacherAuthModal({ isOpen, onClose, onSuccess }: TeacherAuthModa
             <div className="relative">
               <KeyRound className="absolute left-3.5 top-3 w-4 h-4 text-slate-500 dark:text-slate-400" />
               <input
-                type="password"
+                type={showPassword ? "text" : "password"}
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
-                className="w-full pl-10 pr-4 py-2.5 rounded-2xl bg-slate-50 dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-700 text-sm font-bold text-slate-950 dark:text-slate-50 focus:outline-none focus:ring-2 focus:ring-emerald-500 placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                className="w-full pl-10 pr-11 py-2.5 rounded-2xl bg-slate-50 dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-700 text-sm font-bold text-slate-950 dark:text-slate-50 focus:outline-none focus:ring-2 focus:ring-emerald-500 placeholder:text-slate-400 dark:placeholder:text-slate-500"
               />
+              <button
+                type="button"
+                onClick={() => setShowPassword((prev) => !prev)}
+                className="absolute right-3.5 top-2.5 p-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors cursor-pointer"
+                title={showPassword ? "Sembunyikan kata sandi" : "Tampilkan kata sandi"}
+                aria-label={showPassword ? "Sembunyikan kata sandi" : "Tampilkan kata sandi"}
+              >
+                {showPassword ? (
+                  <EyeOff className="w-4 h-4" />
+                ) : (
+                  <Eye className="w-4 h-4" />
+                )}
+              </button>
             </div>
           </div>
 
