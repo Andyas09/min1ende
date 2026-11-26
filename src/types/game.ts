@@ -3,7 +3,7 @@
  * Definisi Tipe Logika Game & Interaksi Kartu
  */
 
-import { CognitiveLevel, Question, PlayerMode } from './database';
+import { CognitiveLevel, Question, PlayerMode, Semester } from './database';
 
 export type CardType = 'question' | 'answer';
 
@@ -26,6 +26,7 @@ export interface ActivePair {
 export interface ArgumentSubmission {
   type: 'voice' | 'text';
   text?: string;
+  transcript?: string;     // Transkrip otomatis dari voice note (Web Speech API)
   audioBlob?: Blob;
   audioDurationSeconds?: number;
   audioUrl?: string;
@@ -41,6 +42,9 @@ export interface VerificationFeedback {
   argumentContent: string;
   audioUrl?: string;
   isGameOver?: boolean;
+  // Hasil pengecekan kata kunci argumentasi: true = sesuai, false = tidak sesuai, null = menunggu penilaian guru
+  argumentValid?: boolean | null;
+  matchedKeywords?: string[];
 }
 
 export interface ScoreWeights {
@@ -70,6 +74,7 @@ export interface StudentRegistration {
   roomCode: string;
   subject: string;
   topic: string;
+  semester?: Semester | 'ALL';
   cardPairsCount: number;
   timeLimitSeconds: number;
   difficultyLevel: CognitiveLevel;

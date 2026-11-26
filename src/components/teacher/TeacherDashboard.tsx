@@ -6,10 +6,14 @@ import { QuestionBankTab } from "./QuestionBankTab";
 import { AssessmentReportTab } from "./AssessmentReportTab";
 import { SessionSettingsTab } from "./SessionSettingsTab";
 import { SubjectManagementTab } from "./SubjectManagementTab";
-import { BookOpen, FileSpreadsheet, Settings, LogOut, School, Layers } from "lucide-react";
+import { TeacherManagementTab } from "./TeacherManagementTab";
+import { BookOpen, FileSpreadsheet, Settings, LogOut, School, Layers, ShieldCheck } from "lucide-react";
 
 interface TeacherDashboardProps {
   teacherName: string;
+  teacherEmail?: string;
+  teacherRole?: "admin" | "guru";
+  teacherSubject?: string;
   onLogout: () => void;
   roomCode: string;
   onUpdateRoomCode: (code: string) => void;
@@ -23,13 +27,18 @@ interface TeacherDashboardProps {
 
 export function TeacherDashboard({
   teacherName,
+  teacherEmail = "",
+  teacherRole = "guru",
+  teacherSubject = "Semua Mapel",
   onLogout,
   roomCode,
   onUpdateRoomCode,
   timerLimits,
   onUpdateTimerLimits,
 }: TeacherDashboardProps) {
-  const [activeTab, setActiveTab] = useState<"questions" | "subjects" | "reports" | "settings">("questions");
+  const [activeTab, setActiveTab] = useState<"questions" | "subjects" | "reports" | "teachers" | "settings">("questions");
+
+  const isAdmin = teacherRole === "admin" || teacherEmail.toLowerCase() === "admin@min1ende.com";
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-950 dark:text-slate-50 pb-16 transition-colors">
@@ -48,17 +57,28 @@ export function TeacherDashboard({
                 />
               </div>
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <h1 className="text-xl sm:text-2xl font-black text-slate-950 dark:text-slate-50">
-                    Dashboard Guru & Fasilitator
+                    Dashboard {isAdmin ? "Administrator & Guru" : "Guru & Fasilitator"}
                   </h1>
-                  <span className="text-[11px] font-black px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-950 dark:bg-emerald-900/60 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-700">
-                    Aktif
+                  <span
+                    className={`text-[11px] font-black px-2.5 py-0.5 rounded-full border ${
+                      isAdmin
+                        ? "bg-purple-100 text-purple-950 dark:bg-purple-900/60 dark:text-purple-200 border-purple-300 dark:border-purple-700"
+                        : "bg-emerald-100 text-emerald-950 dark:bg-emerald-900/60 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-700"
+                    }`}
+                  >
+                    {isAdmin ? "Administrator" : "Guru Aktif"}
                   </span>
+                  {!isAdmin && teacherSubject && (
+                    <span className="text-[11px] font-black px-2.5 py-0.5 rounded-full border bg-blue-100 text-blue-900 dark:bg-blue-900/60 dark:text-blue-200 border-blue-300 dark:border-blue-700">
+                      Mapel: {teacherSubject}
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs sm:text-sm font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5 mt-0.5">
                   <School className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                  <span>{teacherName} • MIN 1 Ende (Nusa Tenggara Timur)</span>
+                  <span>{teacherName} ({teacherEmail || "MIN 1 Ende"}) • Nusa Tenggara Timur</span>
                 </p>
               </div>
             </div>
@@ -90,18 +110,21 @@ export function TeacherDashboard({
               <span>Bank Soal (CRUD)</span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => setActiveTab("subjects")}
-              className={`flex items-center gap-2 px-4 py-3 text-xs sm:text-sm font-black border-b-2 transition-all whitespace-nowrap cursor-pointer ${
-                activeTab === "subjects"
-                  ? "border-emerald-600 text-emerald-700 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/30 rounded-t-xl"
-                  : "border-transparent text-slate-700 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white"
-              }`}
-            >
-              <Layers className="w-4 h-4" />
-              <span>Mata Pelajaran & Materi</span>
-            </button>
+            {/* TAB MATA PELAJARAN & MATERI HANYA BISA DI-CRUD OLEH ADMINISTRATOR */}
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setActiveTab("subjects")}
+                className={`flex items-center gap-2 px-4 py-3 text-xs sm:text-sm font-black border-b-2 transition-all whitespace-nowrap cursor-pointer ${
+                  activeTab === "subjects"
+                    ? "border-emerald-600 text-emerald-700 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/30 rounded-t-xl"
+                    : "border-transparent text-slate-700 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white"
+                }`}
+              >
+                <Layers className="w-4 h-4" />
+                <span>Mata Pelajaran & Materi</span>
+              </button>
+            )}
 
             <button
               type="button"
@@ -116,6 +139,22 @@ export function TeacherDashboard({
               <span>Assessment Report (Rekap & Audio)</span>
             </button>
 
+            {/* TAB KHUSUS ROLE ADMINISTRATOR: CRUD GURU */}
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setActiveTab("teachers")}
+                className={`flex items-center gap-2 px-4 py-3 text-xs sm:text-sm font-black border-b-2 transition-all whitespace-nowrap cursor-pointer ${
+                  activeTab === "teachers"
+                    ? "border-purple-600 text-purple-700 dark:text-purple-400 bg-purple-50/50 dark:bg-purple-950/30 rounded-t-xl"
+                    : "border-transparent text-slate-700 dark:text-slate-300 hover:text-purple-700 dark:hover:text-purple-400"
+                }`}
+              >
+                <ShieldCheck className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+                <span>Manajemen Guru (Admin)</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={() => setActiveTab("settings")}
@@ -126,7 +165,7 @@ export function TeacherDashboard({
               }`}
             >
               <Settings className="w-4 h-4" />
-              <span>Pengaturan Sesi & Timer</span>
+              <span>Pengaturan Sesi, Kelas & Timer</span>
             </button>
           </div>
         </div>
@@ -134,9 +173,17 @@ export function TeacherDashboard({
 
       {/* Main Tab Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {activeTab === "questions" && <QuestionBankTab />}
-        {activeTab === "subjects" && <SubjectManagementTab />}
+        {activeTab === "questions" && (
+          <QuestionBankTab
+            teacherSubject={teacherSubject}
+            isAdmin={isAdmin}
+          />
+        )}
+        {activeTab === "subjects" && isAdmin && <SubjectManagementTab />}
         {activeTab === "reports" && <AssessmentReportTab />}
+        {activeTab === "teachers" && isAdmin && (
+          <TeacherManagementTab currentAdminEmail={teacherEmail} />
+        )}
         {activeTab === "settings" && (
           <SessionSettingsTab
             roomCode={roomCode}

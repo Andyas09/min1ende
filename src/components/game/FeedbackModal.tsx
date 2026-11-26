@@ -3,7 +3,7 @@
 import React, { useEffect } from "react";
 import { VerificationFeedback } from "@/types";
 import { playApplause, playZonk, triggerCelebrationConfetti } from "@/lib/audio";
-import { CheckCircle2, XCircle, ArrowRight, BookOpen, Trophy } from "lucide-react";
+import { CheckCircle2, XCircle, ArrowRight, BookOpen, Trophy, Lock, AlertTriangle } from "lucide-react";
 
 interface FeedbackModalProps {
   feedback: VerificationFeedback;
@@ -85,27 +85,64 @@ export function FeedbackModal({ feedback, onNext }: FeedbackModalProps) {
               {feedback.chosenAnswerText}
             </p>
           </div>
+        </div>
 
-          {!feedback.isCorrect && (
-            <div className="pt-2 border-t border-slate-200 dark:border-slate-700">
-              <span className="text-[10px] font-black text-emerald-800 dark:text-emerald-400 uppercase">Kunci Sebenarnya:</span>
-              <p className="font-black text-emerald-800 dark:text-emerald-300 text-sm mt-0.5">
-                {feedback.correctAnswerText}
-              </p>
+        {/* Status Argumentasi (Hanya saat pasangan benar, atau saat teks diperiksa) */}
+        {feedback.isCorrect && feedback.argumentValid !== undefined && (
+          <div
+            className={`p-3 rounded-2xl border-2 text-left mb-4 text-xs flex items-start gap-2 ${
+              feedback.argumentValid === true
+                ? "bg-emerald-50 dark:bg-emerald-950/50 border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-200"
+                : feedback.argumentValid === false
+                ? "bg-amber-50 dark:bg-amber-950/50 border-amber-300 dark:border-amber-700 text-amber-950 dark:text-amber-200"
+                : "bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-200"
+            }`}
+          >
+            {feedback.argumentValid === true ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+            )}
+            <div>
+              <span className="font-black block">
+                {feedback.argumentValid === true
+                  ? "Argumentasi Sesuai!"
+                  : feedback.argumentValid === false
+                  ? "Argumentasi Tidak Sesuai"
+                  : "Rekaman Suara Tersimpan"}
+              </span>
+              <span className="text-[11px] font-semibold">
+                {feedback.argumentValid === true
+                  ? `Penjelasanmu memuat kata kunci: ${(feedback.matchedKeywords || []).join(", ")}`
+                  : feedback.argumentValid === false
+                  ? "Penjelasan tidak memuat salah satu kata kunci materi yang diharapkan."
+                  : "Rekaman suaramu akan dinilai langsung oleh guru."}
+              </span>
             </div>
-          )}
-        </div>
-
-        {/* Penjelasan Edukatif / Pembahasan */}
-        <div className="p-4 rounded-2xl bg-blue-50 dark:bg-blue-950/70 border-2 border-blue-200 dark:border-blue-800 text-left mb-6">
-          <div className="flex items-center gap-1.5 text-xs font-black text-blue-950 dark:text-blue-200 mb-1">
-            <BookOpen className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-            <span>Pembahasan Edukatif MIN 1 Ende:</span>
           </div>
-          <p className="text-xs font-bold text-slate-900 dark:text-slate-100 leading-relaxed">
-            {feedback.explanation}
-          </p>
-        </div>
+        )}
+
+        {/* Penjelasan Edukatif / Rahasia Soal */}
+        {feedback.isCorrect ? (
+          <div className="p-4 rounded-2xl bg-blue-50 dark:bg-blue-950/70 border-2 border-blue-200 dark:border-blue-800 text-left mb-6">
+            <div className="flex items-center gap-1.5 text-xs font-black text-blue-950 dark:text-blue-200 mb-1">
+              <BookOpen className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              <span>Pembahasan Edukatif MIN 1 Ende:</span>
+            </div>
+            <p className="text-xs font-bold text-slate-900 dark:text-slate-100 leading-relaxed">
+              {feedback.explanation}
+            </p>
+          </div>
+        ) : (
+          <div className="p-4 rounded-2xl bg-slate-100 dark:bg-slate-800/80 border-2 border-slate-200 dark:border-slate-700 text-left mb-6 flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-rose-100 dark:bg-rose-950/60 flex items-center justify-center shrink-0">
+              <Lock className="w-5 h-5 text-rose-600 dark:text-rose-400" />
+            </div>
+            <p className="text-xs font-bold text-slate-700 dark:text-slate-300 leading-relaxed">
+              Kunci jawaban dan pembahasan tidak ditampilkan agar soal tetap bersifat rahasia.
+            </p>
+          </div>
+        )}
 
         {/* Tombol Lanjut */}
         <button
@@ -116,9 +153,7 @@ export function FeedbackModal({ feedback, onNext }: FeedbackModalProps) {
           <span>
             {feedback.isGameOver
               ? "Lihat Hasil Akhir & Peringkat"
-              : feedback.isCorrect
-              ? "Lanjut ke Pasangan Berikutnya"
-              : "Coba Pasangkan Kembali"}
+              : "Lanjut ke Soal Berikutnya"}
           </span>
           <ArrowRight className="w-4 h-4" />
         </button>

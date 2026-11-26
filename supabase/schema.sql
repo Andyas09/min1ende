@@ -38,12 +38,22 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     full_name TEXT NOT NULL,
     email TEXT,
+    password TEXT,
+    subject TEXT DEFAULT 'Semua Mapel',
     role user_role NOT NULL DEFAULT 'guru',
     school TEXT NOT NULL DEFAULT 'MIN 1 Ende',
     avatar_url TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
+
+-- Script Migrasi / Alter Table jika tabel profiles sudah ada sebelumnya di Supabase:
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS password TEXT;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS school TEXT NOT NULL DEFAULT 'MIN 1 Ende';
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS subject TEXT DEFAULT 'Semua Mapel';
+
+-- Kebijakan RLS agar pengguna terautentikasi atau anonim dapat mengelola profile guru
+CREATE POLICY IF NOT EXISTS "Allow all access to profiles" ON public.profiles FOR ALL USING (true) WITH CHECK (true);
 
 -- ==============================================================================
 -- 4. TABEL: QUESTIONS (Bank Soal Pasangan Kartu Make A Match)
@@ -52,16 +62,21 @@ CREATE TABLE IF NOT EXISTS public.questions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
     subject TEXT NOT NULL DEFAULT 'Tematik / IPAS',
+    topic TEXT DEFAULT 'Materi Umum',
     difficulty_level cognitive_level NOT NULL DEFAULT 'Easy',
     question_text TEXT NOT NULL,
     question_image_url TEXT,
     answer_text TEXT NOT NULL,
     answer_image_url TEXT,
+    wrong_answers TEXT[] DEFAULT '{}',
     explanation TEXT NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
+
+ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS wrong_answers TEXT[] DEFAULT '{}';
+ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS topic TEXT DEFAULT 'Materi Umum';
 
 CREATE INDEX IF NOT EXISTS idx_questions_difficulty ON public.questions(difficulty_level);
 CREATE INDEX IF NOT EXISTS idx_questions_active ON public.questions(is_active);
@@ -236,6 +251,9 @@ ON public.game_sessions FOR SELECT USING (true);
 CREATE POLICY "Anyone can update game sessions" 
 ON public.game_sessions FOR UPDATE USING (true);
 
+CREATE POLICY "Anyone can delete game sessions"
+ON public.game_sessions FOR DELETE USING (true);
+
 -- Session Answers:
 -- 1. Murid dapat memasukkan jawaban ke sesi mereka
 CREATE POLICY "Anyone can insert session answers" 
@@ -248,6 +266,9 @@ ON public.session_answers FOR SELECT USING (true);
 -- 3. Guru terautentikasi dapat mengupdate penilaian/komentar argumentasi
 CREATE POLICY "Anyone can update session answers" 
 ON public.session_answers FOR UPDATE USING (true);
+
+CREATE POLICY "Anyone can delete session answers"
+ON public.session_answers FOR DELETE USING (true);
 
 -- ==============================================================================
 -- 10. STORAGE BUCKETS CONFIGURATION

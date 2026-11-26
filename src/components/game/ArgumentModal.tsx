@@ -35,9 +35,11 @@ export function ArgumentModal({
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [recordingResult, setRecordingResult] = useState<VoiceRecordingResult | null>(null);
   const [argumentText, setArgumentText] = useState("");
+  const [voiceTranscript, setVoiceTranscript] = useState("");
   const [recorderError, setRecorderError] = useState<string | null>(null);
 
   const recorderRef = useRef<VoiceRecorderService | null>(null);
+  const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
     recorderRef.current = new VoiceRecorderService();
@@ -45,16 +47,22 @@ export function ArgumentModal({
       if (recorderRef.current) {
         recorderRef.current.cancelRecording();
       }
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch {}
+      }
     };
   }, []);
 
   if (!isOpen) return null;
 
-  // Start Voice Recording
+  // Start Voice Recording (+ optional Speech-to-Text transcript for keyword matching)
   const handleStartRecording = async () => {
     setRecorderError(null);
     setRecordingResult(null);
     setRecordingSeconds(0);
+    setVoiceTranscript("");
 
     try {
       if (!recorderRef.current) {
@@ -64,6 +72,28 @@ export function ArgumentModal({
         setRecordingSeconds(seconds);
       });
       setIsRecording(true);
+
+      // Optional live Indonesian Speech-to-Text
+      try {
+        const SpeechRecognition =
+          (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+        if (SpeechRecognition) {
+          const rec = new SpeechRecognition();
+          rec.lang = "id-ID";
+          rec.continuous = true;
+          rec.interimResults = true;
+          rec.onresult = (event: any) => {
+            let full = "";
+            for (let i = 0; i < event.results.length; i++) {
+              full += event.results[i][0].transcript + " ";
+            }
+            setVoiceTranscript(full.trim());
+          };
+          rec.onerror = () => {};
+          rec.start();
+          recognitionRef.current = rec;
+        }
+      } catch {}
     } catch (err: any) {
       console.error("Gagal merekam suara:", err);
       setRecorderError(err.message || "Gagal mengakses mikrofon. Anda dapat menggunakan opsi Input Teks.");
@@ -72,6 +102,11 @@ export function ArgumentModal({
 
   // Stop Voice Recording
   const handleStopRecording = async () => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch {}
+    }
     if (!recorderRef.current) return;
     try {
       const result = await recorderRef.current.stopRecording();
@@ -87,6 +122,7 @@ export function ArgumentModal({
   const handleResetRecording = () => {
     setRecordingResult(null);
     setRecordingSeconds(0);
+    setVoiceTranscript("");
     setRecorderError(null);
   };
 
@@ -104,7 +140,10 @@ export function ArgumentModal({
         audioBlob: recordingResult.blob,
         audioDurationSeconds: recordingResult.durationSeconds,
         audioUrl: recordingResult.url,
-        text: `Voice Note (${recordingResult.durationSeconds} detik)`,
+        transcript: voiceTranscript.trim() || undefined,
+        text: voiceTranscript.trim()
+          ? `Voice Note (${recordingResult.durationSeconds} detik): "${voiceTranscript.trim()}"`
+          : `Voice Note (${recordingResult.durationSeconds} detik)`,
       });
     } else {
       onVerify({

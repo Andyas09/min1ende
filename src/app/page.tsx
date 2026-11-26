@@ -10,7 +10,7 @@ import { StudentRegistrationForm } from "@/components/game/StudentRegistration";
 import { GameArena } from "@/components/game/GameArena";
 import { GameResultScreen } from "@/components/game/GameResultScreen";
 import { StudentRegistration, GameSession, ScoreBreakdown } from "@/types";
-import { createGameSession, getFilteredQuestions, supabase, isSupabaseConfigured } from "@/lib/supabase";
+import { createGameSession, getFilteredQuestions, supabase, isSupabaseConfigured, clearBrowserDataCache } from "@/lib/supabase";
 
 export default function HomePage() {
   // Navigation / View State
@@ -19,7 +19,7 @@ export default function HomePage() {
   const [isTeacherAuthOpen, setIsTeacherAuthOpen] = useState(false);
 
   // Teacher State: Disimpan di localStorage agar saat halaman di-reload tidak keluar otomatis
-  const [teacherInfo, setTeacherInfo] = useState<{ email: string; name: string } | null>(null);
+  const [teacherInfo, setTeacherInfo] = useState<{ email: string; name: string; role?: "admin" | "guru"; subject?: string } | null>(null);
   const [roomCode, setRoomCode] = useState("MIN1-ENDE");
   const [timerLimits, setTimerLimits] = useState({
     Easy: 300,
@@ -27,17 +27,47 @@ export default function HomePage() {
     HOTS: 420,
   });
 
-  // Pulihkan sesi login guru saat browser di-refresh
+  // Bersihkan cache data browser dan pulihkan sesi login guru saat browser di-refresh
   React.useEffect(() => {
+    // 1. Bersihkan seluruh sisa cache data lama di browser
+    clearBrowserDataCache();
+
+    // 2. Pulihkan sesi login guru jika ada dan verifikasi ke Supabase
     try {
       const savedTeacher = localStorage.getItem("sd_match_teacher_session");
       if (savedTeacher) {
         const parsed = JSON.parse(savedTeacher);
         if (parsed?.email) {
+          if (parsed.email.toLowerCase() === "admin@min1ende.com") {
+            parsed.role = "admin";
+          }
           setTeacherInfo(parsed);
           const lastView = localStorage.getItem("sd_match_last_view");
           if (lastView === "teacher") {
             setCurrentView("teacher");
+          }
+
+          // Verifikasi dan sinkronkan data profil terbaru langsung dari Supabase
+          if (isSupabaseConfigured()) {
+            (supabase.from("profiles") as any)
+              .select("full_name, role, subject")
+              .ilike("email", parsed.email)
+              .single()
+              .then(({ data }: any) => {
+                if (data) {
+                  setTeacherInfo((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          name: data.full_name || prev.name,
+                          role: parsed.email.toLowerCase() === "admin@min1ende.com" ? "admin" : data.role || prev.role,
+                          subject: data.subject || prev.subject,
+                        }
+                      : null
+                  );
+                }
+              })
+              .catch((err: any) => console.warn("Sinkronisasi profile:", err));
           }
         }
       }
@@ -69,11 +99,17 @@ export default function HomePage() {
     }
   };
 
-  const handleTeacherLoginSuccess = (info: { email: string; name: string }) => {
-    setTeacherInfo(info);
+  const handleTeacherLoginSuccess = (info: { email: string; name: string; role?: "admin" | "guru"; subject?: string }) => {
+    // Pastikan admin@min1ende.com memiliki role admin
+    const finalInfo = {
+      ...info,
+      role: info.email.toLowerCase() === "admin@min1ende.com" ? ("admin" as const) : info.role || ("guru" as const),
+      subject: info.subject || "Semua Mapel",
+    };
+    setTeacherInfo(finalInfo);
     setCurrentView("teacher");
     try {
-      localStorage.setItem("sd_match_teacher_session", JSON.stringify(info));
+      localStorage.setItem("sd_match_teacher_session", JSON.stringify(finalInfo));
       localStorage.setItem("sd_match_last_view", "teacher");
     } catch (e) {
       console.warn("Gagal menyimpan sesi guru ke localStorage:", e);
@@ -104,6 +140,7 @@ export default function HomePage() {
         difficulty: student.difficultyLevel,
         subject: student.subject,
         topic: student.topic,
+        semester: student.semester,
       });
 
       const targetPairs = student.cardPairsCount || 6;
@@ -166,6 +203,9 @@ export default function HomePage() {
         {currentView === "teacher" && teacherInfo ? (
           <TeacherDashboard
             teacherName={teacherInfo.name}
+            teacherEmail={teacherInfo.email}
+            teacherRole={teacherInfo.role || (teacherInfo.email.toLowerCase() === "admin@min1ende.com" ? "admin" : "guru")}
+            teacherSubject={teacherInfo.subject || "Semua Mapel"}
             onLogout={handleTeacherLogout}
             roomCode={roomCode}
             onUpdateRoomCode={setRoomCode}

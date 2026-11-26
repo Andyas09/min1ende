@@ -1,12 +1,26 @@
 import { createClient } from "@supabase/supabase-js";
-import { Database, Question, QuestionInsert, QuestionUpdate, GameSession, GameSessionInsert, SessionAnswer, SessionAnswerInsert, CognitiveLevel, SubjectItem } from "@/types";
-import { INITIAL_QUESTIONS, DEFAULT_SUBJECTS } from "./seed-data";
+import {
+  Database,
+  Question,
+  QuestionInsert,
+  QuestionUpdate,
+  GameSession,
+  GameSessionInsert,
+  SessionAnswer,
+  SessionAnswerInsert,
+  CognitiveLevel,
+  SubjectItem,
+  ClassItem,
+  Semester,
+} from "@/types";
+import { DEFAULT_SUBJECTS } from "./seed-data";
+import { subjectMatches, shuffleArray } from "./game-engine";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 
 /**
- * Cek apakah kredensial Supabase sudah diatur dengan benar dan bukan placeholder
+ * Cek apakah kredensial Supabase sudah diatur dengan benar
  */
 export const isSupabaseConfigured = (): boolean => {
   return (
@@ -26,133 +40,252 @@ export const supabase = createClient<Database>(
   supabaseAnonKey || "placeholder-anon-key"
 );
 
-// Penyimpanan Lokal InMemory/LocalStorage saat mode demo/kredensial belum diisi
-const LOCAL_STORAGE_QUESTIONS_KEY = "sd_match_questions_cache";
-const LOCAL_STORAGE_SUBJECTS_KEY = "sd_match_subjects_cache";
-const LOCAL_STORAGE_SESSIONS_KEY = "sd_match_sessions_cache";
-const LOCAL_STORAGE_ANSWERS_KEY = "sd_match_answers_cache";
-const LOCAL_STORAGE_DELETED_SESSIONS_KEY = "sd_match_deleted_sessions";
-
-function getDeletedSessionIds(): string[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(LOCAL_STORAGE_DELETED_SESSIONS_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch (e) {
-    console.warn("Gagal membaca deleted sessions:", e);
-  }
-  return [];
-}
-
-function markSessionAsDeleted(sessionId: string) {
+/**
+ * Bersihkan seluruh sisa cache data lama di browser (localStorage)
+ */
+export function clearBrowserDataCache(): void {
   if (typeof window === "undefined") return;
   try {
-    const current = getDeletedSessionIds();
-    if (!current.includes(sessionId)) {
-      current.push(sessionId);
-      localStorage.setItem(LOCAL_STORAGE_DELETED_SESSIONS_KEY, JSON.stringify(current));
+    const keysToRemove = [
+      "sd_match_teachers_cache",
+      "sd_match_questions_cache",
+      "sd_match_subjects_cache",
+      "sd_match_sessions_cache",
+      "sd_match_answers_cache",
+      "sd_match_deleted_sessions",
+    ];
+    for (const k of keysToRemove) {
+      localStorage.removeItem(k);
     }
   } catch (e) {
-    console.warn("Gagal menyimpan deleted session:", e);
+    console.warn("Gagal membersihkan cache lokal browser:", e);
   }
 }
 
-function getLocalSubjects(): SubjectItem[] {
-  if (typeof window === "undefined") return DEFAULT_SUBJECTS;
-  try {
-    const cached = localStorage.getItem(LOCAL_STORAGE_SUBJECTS_KEY);
-    if (cached) return JSON.parse(cached);
-  } catch (e) {
-    console.warn("Gagal membaca cache lokal mapel:", e);
-  }
-  return DEFAULT_SUBJECTS;
+/**
+ * Deteksi error Supabase karena tabel/kolom belum dibuat (migrasi belum dijalankan)
+ */
+function isSchemaMissingError(err: any): boolean {
+  if (!err) return false;
+  const code = String(err.code || "");
+  const msg = String(err.message || "").toLowerCase();
+  return (
+    code === "PGRST204" ||
+    code === "PGRST205" ||
+    code === "42703" ||
+    code === "42P01" ||
+    msg.includes("schema cache") ||
+    msg.includes("does not exist")
+  );
 }
 
-function saveLocalSubjects(subjects: SubjectItem[]) {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(LOCAL_STORAGE_SUBJECTS_KEY, JSON.stringify(subjects));
-  } catch (e) {
-    console.warn("Gagal menyimpan cache lokal mapel:", e);
+/**
+ * Pesan error yang ramah untuk guru
+ */
+function friendlyDbError(err: any, fallback: string): Error {
+  const msg = String(err?.message || "");
+  if (String(err?.code) === "42501" || msg.toLowerCase().includes("row-level security")) {
+    return new Error(
+      "Database Supabase menolak penyimpanan (Row Level Security). Jalankan file migrasi supabase/migrations/20261127_revisi_soal_kelas.sql di Supabase SQL Editor."
+    );
   }
+  if (isSchemaMissingError(err)) {
+    return new Error(
+      "Tabel/kolom di database Supabase belum lengkap. Jalankan file migrasi supabase/migrations/20261127_revisi_soal_kelas.sql di Supabase SQL Editor."
+    );
+  }
+  return new Error(msg || fallback);
 }
 
-function getLocalQuestions(): Question[] {
-  if (typeof window === "undefined") return INITIAL_QUESTIONS;
-  try {
-    const cached = localStorage.getItem(LOCAL_STORAGE_QUESTIONS_KEY);
-    if (cached) return JSON.parse(cached);
-  } catch (e) {
-    console.warn("Gagal membaca cache lokal soal:", e);
+/**
+ * Generate UUID v4 standar yang valid untuk PostgreSQL
+ */
+function generateUUID(): string {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
   }
-  return INITIAL_QUESTIONS;
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
-function saveLocalQuestions(questions: Question[]) {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(LOCAL_STORAGE_QUESTIONS_KEY, JSON.stringify(questions));
-  } catch (e) {
-    console.warn("Gagal menyimpan cache lokal soal:", e);
-  }
+function isValidUUID(str?: string | null): boolean {
+  if (!str) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(str);
 }
 
-function getLocalSessions(): GameSession[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const cached = localStorage.getItem(LOCAL_STORAGE_SESSIONS_KEY);
-    if (cached) {
-      const parsed: GameSession[] = JSON.parse(cached);
-      // Bersihkan sesi hantu (in_progress kosong dengan skor 0)
-      return parsed.filter((s) => s.status !== "in_progress" || Number(s.final_score) > 0);
-    }
-  } catch (e) {
-    console.warn("Gagal membaca cache sesi:", e);
-  }
-  return [];
-}
-
-function saveLocalSessions(sessions: GameSession[]) {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(LOCAL_STORAGE_SESSIONS_KEY, JSON.stringify(sessions));
-  } catch (e) {
-    console.warn("Gagal menyimpan cache sesi:", e);
-  }
-}
-
-function getLocalAnswers(): SessionAnswer[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const cached = localStorage.getItem(LOCAL_STORAGE_ANSWERS_KEY);
-    if (cached) return JSON.parse(cached);
-  } catch (e) {
-    console.warn("Gagal membaca cache jawaban:", e);
-  }
-  return [];
-}
-
-function saveLocalAnswers(answers: SessionAnswer[]) {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(LOCAL_STORAGE_ANSWERS_KEY, JSON.stringify(answers));
-  } catch (e) {
-    console.warn("Gagal menyimpan cache jawaban:", e);
-  }
+export interface TeacherAccount {
+  id: string;
+  full_name: string;
+  email: string;
+  password?: string;
+  subject?: string;
+  role: "admin" | "guru";
+  school: string;
+  created_at: string;
 }
 
 // ==============================================================================
-// 1. STORAGE UTILITIES (Upload Gambar Soal & Audio Voice Note)
+// 1. MANAJEMEN GURU (Langsung ke tabel Supabase 'profiles' - Tanpa Cache)
 // ==============================================================================
 
 /**
- * Upload gambar soal/jawaban ke Supabase Storage bucket 'soal-images'
+ * Ambil daftar semua guru langsung dari database Supabase (profiles)
  */
+export async function getTeachersList(): Promise<TeacherAccount[]> {
+  try {
+    const { data, error } = await (supabase.from("profiles") as any)
+      .select("*")
+      .order("created_at", { ascending: true });
+
+    if (error) throw error;
+    if (!data) return [];
+
+    return data.map((p: any) => ({
+      id: p.id,
+      full_name: p.full_name,
+      email: p.email || "",
+      password: p.password || "",
+      subject: p.subject || "Semua Mapel",
+      role: p.email?.toLowerCase() === "admin@min1ende.com" ? "admin" : p.role || "guru",
+      school: p.school || "MIN 1 Ende",
+      created_at: p.created_at || new Date().toISOString(),
+    }));
+  } catch (err) {
+    console.error("Gagal mengambil data guru dari Supabase:", err);
+    return [];
+  }
+}
+
+/**
+ * Tambah akun guru baru langsung ke database Supabase (profiles)
+ */
+export async function createTeacherAccount(data: {
+  full_name: string;
+  email: string;
+  school?: string;
+  subject?: string;
+  password?: string;
+  role: "admin" | "guru";
+}): Promise<TeacherAccount> {
+  const generatedId = generateUUID();
+
+  const newAccount: TeacherAccount = {
+    id: generatedId,
+    full_name: data.full_name,
+    email: data.email.toLowerCase().trim(),
+    password: data.password || "min1ende123",
+    subject: data.subject || "Semua Mapel",
+    role: data.role,
+    school: data.school?.trim() || "MIN 1 Ende",
+    created_at: new Date().toISOString(),
+  };
+
+  try {
+    const { data: insertData, error: insertError } = await (supabase.from("profiles") as any)
+      .insert([
+        {
+          id: generatedId,
+          full_name: newAccount.full_name,
+          email: newAccount.email,
+          password: newAccount.password,
+          subject: newAccount.subject,
+          role: newAccount.role,
+          school: newAccount.school,
+        },
+      ])
+      .select()
+      .single();
+
+    if (insertError) {
+      // Coba jika ada batasan id foreign key
+      const { data: retryData, error: retryError } = await (supabase.from("profiles") as any)
+        .insert([
+          {
+            full_name: newAccount.full_name,
+            email: newAccount.email,
+            password: newAccount.password,
+            subject: newAccount.subject,
+            role: newAccount.role,
+            school: newAccount.school,
+          },
+        ])
+        .select()
+        .single();
+
+      if (retryError) throw retryError;
+      if (retryData) return retryData as TeacherAccount;
+    }
+
+    if (insertData) return insertData as TeacherAccount;
+  } catch (err: any) {
+    console.error("Gagal menyimpan akun guru ke Supabase:", err);
+    throw new Error(err.message || "Gagal menyimpan akun guru ke database Supabase.");
+  }
+
+  return newAccount;
+}
+
+/**
+ * Update akun guru langsung di database Supabase (profiles)
+ */
+export async function updateTeacherAccount(
+  id: string,
+  updates: Partial<TeacherAccount>
+): Promise<TeacherAccount | null> {
+  try {
+    const { data, error } = await (supabase.from("profiles") as any)
+      .update(updates)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) {
+      if (updates.email) {
+        const { data: emailData, error: emailErr } = await (supabase.from("profiles") as any)
+          .update(updates)
+          .ilike("email", updates.email)
+          .select()
+          .single();
+        if (!emailErr && emailData) return emailData as TeacherAccount;
+      }
+      throw error;
+    }
+
+    return (data as TeacherAccount) || null;
+  } catch (err: any) {
+    console.error("Gagal update profile di Supabase:", err);
+    throw new Error(err.message || "Gagal update profile di database Supabase.");
+  }
+}
+
+/**
+ * Hapus akun guru langsung di database Supabase (profiles)
+ */
+export async function deleteTeacherAccount(id: string): Promise<boolean> {
+  try {
+    const { error } = await (supabase.from("profiles") as any)
+      .delete()
+      .eq("id", id);
+
+    if (error) throw error;
+    return true;
+  } catch (err) {
+    console.error("Gagal hapus profile di Supabase:", err);
+    return false;
+  }
+}
+
+// ==============================================================================
+// 2. STORAGE UTILITIES (Upload Gambar & Rekaman Suara)
+// ==============================================================================
+
 export async function uploadQuestionImage(file: File): Promise<{ url: string | null; error: string | null }> {
   try {
     if (!isSupabaseConfigured()) {
-      const localUrl = URL.createObjectURL(file);
-      return { url: localUrl, error: null };
+      return { url: URL.createObjectURL(file), error: null };
     }
 
     const fileExt = file.name.split(".").pop();
@@ -161,10 +294,7 @@ export async function uploadQuestionImage(file: File): Promise<{ url: string | n
 
     const { error: uploadError } = await supabase.storage
       .from("soal-images")
-      .upload(filePath, file, {
-        cacheControl: "3600",
-        upsert: false,
-      });
+      .upload(filePath, file, { cacheControl: "3600", upsert: false });
 
     if (uploadError) throw uploadError;
 
@@ -176,17 +306,13 @@ export async function uploadQuestionImage(file: File): Promise<{ url: string | n
   }
 }
 
-/**
- * Upload rekaman suara (Voice Note) murid ke Supabase Storage bucket 'argumentasi-audio'
- */
 export async function uploadArgumentAudio(
   audioBlob: Blob,
   fileNamePrefix: string = "argumen"
 ): Promise<{ url: string | null; error: string | null }> {
   try {
     if (!isSupabaseConfigured()) {
-      const localUrl = URL.createObjectURL(audioBlob);
-      return { url: localUrl, error: null };
+      return { url: URL.createObjectURL(audioBlob), error: null };
     }
 
     const mimeType = audioBlob.type || "audio/webm";
@@ -196,11 +322,7 @@ export async function uploadArgumentAudio(
 
     const { error: uploadError } = await supabase.storage
       .from("argumentasi-audio")
-      .upload(filePath, audioBlob, {
-        contentType: mimeType,
-        cacheControl: "3600",
-        upsert: false,
-      });
+      .upload(filePath, audioBlob, { contentType: mimeType, cacheControl: "3600", upsert: false });
 
     if (uploadError) throw uploadError;
 
@@ -213,216 +335,274 @@ export async function uploadArgumentAudio(
 }
 
 // ==============================================================================
-// 1.5. MATA PELAJARAN & MATERI (CRUD OPERATIONS)
+// 3. MATA PELAJARAN (Tabel Supabase 'subjects')
 // ==============================================================================
 
+function slugId(prefix: string, name: string): string {
+  return `${prefix}_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "")}_${Math.random()
+    .toString(36)
+    .substring(2, 6)}`;
+}
+
 /**
- * Ambil semua daftar mata pelajaran & materi
+ * Ambil daftar mata pelajaran dari tabel `subjects`.
+ * Mapel yang hanya ada di bank soal (belum terdaftar) tetap ditampilkan agar soalnya bisa dimainkan.
  */
 export async function getSubjects(): Promise<SubjectItem[]> {
-  if (!isSupabaseConfigured()) {
-    return getLocalSubjects();
-  }
-
+  let base: SubjectItem[] = DEFAULT_SUBJECTS;
   try {
     const { data, error } = await (supabase.from("subjects") as any)
       .select("*")
       .order("created_at", { ascending: true });
-
-    if (error || !data || data.length === 0) {
-      return getLocalSubjects();
+    if (!error && data && data.length > 0) {
+      base = (data as any[]).map((s) => ({
+        id: s.id,
+        name: s.name,
+        icon: s.icon || "📚",
+        description: s.description || "",
+        topics: Array.isArray(s.topics) && s.topics.length > 0 ? s.topics : [`Semua Materi ${s.name}`],
+        topics_semester_2: Array.isArray(s.topics_semester_2) ? s.topics_semester_2 : [],
+        created_at: s.created_at,
+      }));
     }
-    return data as SubjectItem[];
   } catch (err) {
-    console.warn("Gagal query subjects dari Supabase, gunakan local cache:", err);
-    return getLocalSubjects();
+    console.warn("Tabel subjects belum tersedia, gunakan daftar bawaan:", err);
+  }
+
+  try {
+    const { data } = await supabase.from("questions").select("subject");
+    const dbSubjects = Array.from(new Set((data || []).map((q: any) => q.subject).filter(Boolean))) as string[];
+    const merged = [...base];
+    for (const sub of dbSubjects) {
+      if (!merged.some((m) => subjectMatches(m.name, sub))) {
+        merged.push({
+          id: `sub_q_${sub.toLowerCase().replace(/[^a-z0-9]/g, "_")}`,
+          name: sub,
+          icon: "📚",
+          description: `Mata Pelajaran ${sub}`,
+          topics: [`Semua Materi ${sub}`],
+        });
+      }
+    }
+    return merged;
+  } catch {
+    return base;
   }
 }
 
-/**
- * Tambah mata pelajaran baru
- */
-export async function createSubject(item: { name: string; icon?: string; description?: string; topics?: string[] }): Promise<SubjectItem> {
-  const newSubject: SubjectItem = {
-    id: `sub_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-    name: item.name,
+export async function createSubject(item: {
+  name: string;
+  icon?: string;
+  description?: string;
+  topics?: string[];
+  topics_semester_2?: string[];
+}): Promise<SubjectItem> {
+  const payload: any = {
+    id: slugId("sub", item.name),
+    name: item.name.trim(),
     icon: item.icon || "📚",
     description: item.description || "",
     topics: item.topics && item.topics.length > 0 ? item.topics : [`Semua Materi ${item.name}`],
-    created_at: new Date().toISOString(),
+    topics_semester_2: item.topics_semester_2 || [],
   };
-
-  const list = getLocalSubjects();
-  const updated = [...list, newSubject];
-  saveLocalSubjects(updated);
-
-  if (!isSupabaseConfigured()) {
-    return newSubject;
+  let { data, error } = await (supabase.from("subjects") as any).insert([payload]).select().single();
+  if (error && isSchemaMissingError(error)) {
+    const { topics_semester_2: _ignored, ...basePayload } = payload;
+    ({ data, error } = await (supabase.from("subjects") as any).insert([basePayload]).select().single());
   }
-
-  try {
-    const { data, error } = await (supabase.from("subjects") as any)
-      .insert([newSubject])
-      .select()
-      .single();
-
-    if (!error && data) return data as SubjectItem;
-  } catch (err) {
-    console.warn("Gagal insert subject ke Supabase:", err);
-  }
-  return newSubject;
+  if (error) throw friendlyDbError(error, "Gagal menyimpan mata pelajaran.");
+  return {
+    ...(data as SubjectItem),
+    topics_semester_2: (data as any).topics_semester_2 || item.topics_semester_2 || [],
+  };
 }
 
-/**
- * Perbarui mata pelajaran (nama, ikon, materi/topics)
- */
 export async function updateSubject(id: string, updates: Partial<SubjectItem>): Promise<SubjectItem | null> {
-  const list = getLocalSubjects();
-  const idx = list.findIndex((s) => s.id === id);
-  if (idx !== -1) {
-    list[idx] = { ...list[idx], ...updates };
-    saveLocalSubjects(list);
-  }
+  const payload: any = {};
+  if (updates.name !== undefined) payload.name = updates.name;
+  if (updates.icon !== undefined) payload.icon = updates.icon;
+  if (updates.description !== undefined) payload.description = updates.description;
+  if (updates.topics !== undefined) payload.topics = updates.topics;
+  if (updates.topics_semester_2 !== undefined) payload.topics_semester_2 = updates.topics_semester_2;
 
-  if (!isSupabaseConfigured()) {
-    return idx !== -1 ? list[idx] : null;
-  }
+  let { data, error } = await (supabase.from("subjects") as any)
+    .update(payload)
+    .eq("id", id)
+    .select()
+    .maybeSingle();
 
-  try {
-    const { data, error } = await (supabase.from("subjects") as any)
-      .update(updates)
+  if (error && isSchemaMissingError(error)) {
+    const { topics_semester_2: _ignored, ...basePayload } = payload;
+    ({ data, error } = await (supabase.from("subjects") as any)
+      .update(basePayload)
       .eq("id", id)
       .select()
-      .single();
-
-    if (!error && data) return data as SubjectItem;
-  } catch (err) {
-    console.warn("Gagal update subject ke Supabase:", err);
+      .maybeSingle());
   }
-  return idx !== -1 ? list[idx] : null;
+
+  if (error) throw friendlyDbError(error, "Gagal memperbarui mata pelajaran.");
+  if (!data) {
+    // Mapel bawaan yang belum tersimpan di tabel: simpan sebagai baris baru
+    const fallback = DEFAULT_SUBJECTS.find((s) => s.id === id);
+    if (fallback) {
+      const row: any = { ...fallback, ...payload, id };
+      let { data: ins, error: insErr } = await (supabase.from("subjects") as any)
+        .insert([{
+          id: row.id,
+          name: row.name,
+          icon: row.icon,
+          description: row.description,
+          topics: row.topics,
+          topics_semester_2: row.topics_semester_2 || [],
+        }])
+        .select()
+        .single();
+      if (insErr && isSchemaMissingError(insErr)) {
+        ({ data: ins, error: insErr } = await (supabase.from("subjects") as any)
+          .insert([{ id: row.id, name: row.name, icon: row.icon, description: row.description, topics: row.topics }])
+          .select()
+          .single());
+      }
+      if (insErr) throw friendlyDbError(insErr, "Gagal memperbarui mata pelajaran.");
+      return {
+        ...(ins as SubjectItem),
+        topics_semester_2: (ins as any).topics_semester_2 || row.topics_semester_2 || [],
+      };
+    }
+  }
+  return data
+    ? {
+        ...(data as SubjectItem),
+        topics_semester_2: (data as any).topics_semester_2 ?? updates.topics_semester_2 ?? [],
+      }
+    : null;
 }
 
-/**
- * Hapus mata pelajaran
- */
 export async function deleteSubject(id: string): Promise<boolean> {
-  const list = getLocalSubjects();
-  const filtered = list.filter((s) => s.id !== id);
-  saveLocalSubjects(filtered);
-
-  if (!isSupabaseConfigured()) {
-    return true;
-  }
-
-  try {
-    await (supabase.from("subjects") as any).delete().eq("id", id);
-    return true;
-  } catch (err) {
-    console.warn("Gagal delete subject di Supabase:", err);
-    return true;
-  }
+  const { error } = await (supabase.from("subjects") as any).delete().eq("id", id);
+  if (error) throw friendlyDbError(error, "Gagal menghapus mata pelajaran.");
+  return true;
 }
 
 // ==============================================================================
-// 2. BANK SOAL (CRUD OPERATIONS)
+// 3b. KELAS (Tabel Supabase 'classes') - dikelola dari Dashboard Guru
+// ==============================================================================
+
+export const DEFAULT_CLASSES: ClassItem[] = ["4A", "4B", "5A", "5B", "6A", "6B"].map((n) => ({
+  id: `default_${n}`,
+  name: n,
+  description: "",
+}));
+
+/**
+ * Ambil daftar kelas. Bila tabel `classes` belum dibuat, gunakan daftar bawaan.
+ */
+export async function getClasses(): Promise<{ classes: ClassItem[]; fromDatabase: boolean }> {
+  try {
+    const { data, error } = await (supabase.from("classes") as any)
+      .select("*")
+      .order("name", { ascending: true });
+    if (error) throw error;
+    return { classes: (data || []) as ClassItem[], fromDatabase: true };
+  } catch (err) {
+    console.warn("Tabel classes belum tersedia, gunakan daftar bawaan:", err);
+    return { classes: DEFAULT_CLASSES, fromDatabase: false };
+  }
+}
+
+export async function createClass(item: { name: string; description?: string }): Promise<ClassItem> {
+  const { data, error } = await (supabase.from("classes") as any)
+    .insert([{ name: item.name.trim(), description: item.description?.trim() || "" }])
+    .select()
+    .single();
+  if (error) {
+    if (String(error.code) === "23505") throw new Error(`Kelas "${item.name}" sudah ada.`);
+    throw friendlyDbError(error, "Gagal menambah kelas.");
+  }
+  return data as ClassItem;
+}
+
+export async function updateClass(id: string, updates: { name?: string; description?: string }): Promise<ClassItem> {
+  const { data, error } = await (supabase.from("classes") as any)
+    .update(updates)
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) {
+    if (String(error.code) === "23505") throw new Error(`Kelas "${updates.name}" sudah ada.`);
+    throw friendlyDbError(error, "Gagal memperbarui kelas.");
+  }
+  return data as ClassItem;
+}
+
+export async function deleteClass(id: string): Promise<boolean> {
+  const { error } = await (supabase.from("classes") as any).delete().eq("id", id);
+  if (error) throw friendlyDbError(error, "Gagal menghapus kelas.");
+  return true;
+}
+
+// ==============================================================================
+// 4. BANK SOAL (Tabel Supabase 'questions')
 // ==============================================================================
 
 export interface QuestionFilterOptions {
   difficulty?: CognitiveLevel | "ALL";
   subject?: string;
   topic?: string;
+  semester?: Semester | "ALL";
+}
+
+function topicMatches(qTopic: string | undefined | null, selected?: string): boolean {
+  if (!selected || selected === "ALL" || selected.startsWith("Semua Materi")) return true;
+  if (!qTopic) return true; // soal tanpa topik tetap ikut
+  return qTopic.toLowerCase().includes(selected.toLowerCase()) || selected.toLowerCase().includes(qTopic.toLowerCase());
 }
 
 /**
- * Ambil daftar soal terfilter (mata pelajaran, materi, tingkat kognitif)
+ * Ambil soal aktif untuk permainan murid (diacak).
+ * Urutan pelonggaran filter: mapel+materi+tingkat → mapel+tingkat → mapel saja.
  */
 export async function getFilteredQuestions(options?: QuestionFilterOptions): Promise<Question[]> {
-  const { difficulty, subject, topic } = options || {};
-
-  const matchFilter = (q: Question) => {
-    if (!q.is_active) return false;
-    if (difficulty && difficulty !== "ALL" && q.difficulty_level !== difficulty) return false;
-    if (subject && subject !== "ALL" && !q.subject.toLowerCase().includes(subject.toLowerCase())) return false;
-    if (topic && topic !== "ALL" && !topic.startsWith("Semua Materi") && q.topic && !q.topic.toLowerCase().includes(topic.toLowerCase())) return false;
-    return true;
-  };
-
-  if (!isSupabaseConfigured()) {
-    const list = getLocalQuestions();
-    const filtered = list.filter(matchFilter);
-    // Jika filter terlalu ketat dan tidak menemukan soal, fallback ke soal tingkat kesulitan atau seluruh soal
-    return filtered.length > 0 ? filtered : list.filter((q) => !difficulty || difficulty === "ALL" || q.difficulty_level === difficulty);
-  }
+  const { difficulty, subject, topic, semester } = options || {};
 
   try {
-    let query = supabase
+    const { data, error } = await supabase
       .from("questions")
       .select("*")
       .eq("is_active", true)
       .order("created_at", { ascending: false });
-
-    if (difficulty && difficulty !== "ALL") {
-      query = query.eq("difficulty_level", difficulty);
-    }
-
-    const { data, error } = await query;
     if (error) throw error;
-    if (!data || data.length === 0) {
-      const list = INITIAL_QUESTIONS.filter(matchFilter);
-      return list.length > 0 ? list : INITIAL_QUESTIONS.filter((q) => !difficulty || difficulty === "ALL" || q.difficulty_level === difficulty);
-    }
 
-    const filtered = (data as Question[]).filter(matchFilter);
-    return filtered.length > 0 ? filtered : (data as Question[]);
+    const all = (data || []) as Question[];
+    const bySubject =
+      subject && subject !== "ALL" ? all.filter((q) => subjectMatches(q.subject, subject)) : all;
+    const bySemester =
+      semester && semester !== "ALL"
+        ? bySubject.filter((q) => (q.semester ?? 1) === semester)
+        : bySubject;
+    const semPool = bySemester.length > 0 ? bySemester : bySubject;
+    const byLevel = (list: Question[]) =>
+      difficulty && difficulty !== "ALL" ? list.filter((q) => q.difficulty_level === difficulty) : list;
+
+    let result = byLevel(semPool.filter((q) => topicMatches(q.topic, topic)));
+    if (result.length === 0) result = byLevel(semPool);
+    if (result.length === 0) result = semPool;
+
+    return shuffleArray(result);
   } catch (err) {
-    console.warn("Gagal query Supabase questions, fallback ke data lokal:", err);
-    const list = getLocalQuestions();
-    const filtered = list.filter(matchFilter);
-    return filtered.length > 0 ? filtered : list.filter((q) => !difficulty || difficulty === "ALL" || q.difficulty_level === difficulty);
+    console.error("Gagal query questions terfilter dari Supabase:", err);
+    return [];
   }
 }
 
-/**
- * Ambil daftar soal (bisa difilter berdasarkan tingkat kesulitan)
- */
 export async function getQuestions(difficulty?: CognitiveLevel): Promise<Question[]> {
-  if (!isSupabaseConfigured()) {
-    const list = getLocalQuestions();
-    return difficulty ? list.filter((q) => q.difficulty_level === difficulty && q.is_active) : list;
-  }
-
-  try {
-    let query = supabase
-      .from("questions")
-      .select("*")
-      .eq("is_active", true)
-      .order("created_at", { ascending: false });
-
-    if (difficulty) {
-      query = query.eq("difficulty_level", difficulty);
-    }
-
-    const { data, error } = await query;
-    if (error) throw error;
-    if (!data || data.length === 0) {
-      return INITIAL_QUESTIONS.filter((q) => !difficulty || q.difficulty_level === difficulty);
-    }
-    return data as Question[];
-  } catch (err) {
-    console.warn("Gagal query Supabase questions, fallback ke data lokal:", err);
-    const list = getLocalQuestions();
-    return difficulty ? list.filter((q) => q.difficulty_level === difficulty && q.is_active) : list;
-  }
+  return getFilteredQuestions({ difficulty });
 }
 
 /**
- * Ambil semua soal untuk guru (termasuk non-aktif)
+ * Ambil semua soal untuk dashboard guru langsung dari Supabase
  */
 export async function getAllQuestionsForTeacher(): Promise<Question[]> {
-  if (!isSupabaseConfigured()) {
-    return getLocalQuestions();
-  }
-
   try {
     const { data, error } = await supabase
       .from("questions")
@@ -432,240 +612,155 @@ export async function getAllQuestionsForTeacher(): Promise<Question[]> {
     if (error) throw error;
     return (data || []) as Question[];
   } catch (err) {
-    console.warn("Gagal query questions guru, gunakan local cache:", err);
-    return getLocalQuestions();
+    console.error("Gagal query questions guru dari Supabase:", err);
+    return [];
   }
 }
 
+const QUESTION_BASE_COLUMNS = [
+  "subject",
+  "difficulty_level",
+  "question_text",
+  "question_image_url",
+  "answer_text",
+  "answer_image_url",
+  "explanation",
+  "is_active",
+];
+const QUESTION_EXTRA_COLUMNS = ["topic", "semester", "wrong_answers", "keywords"];
+
+function buildQuestionPayload(item: Partial<QuestionInsert>, includeExtras: boolean): Record<string, any> {
+  const cols = includeExtras ? [...QUESTION_BASE_COLUMNS, ...QUESTION_EXTRA_COLUMNS] : QUESTION_BASE_COLUMNS;
+  const payload: Record<string, any> = {};
+  for (const c of cols) {
+    const v = (item as any)[c];
+    if (v !== undefined) payload[c] = v;
+  }
+  return payload;
+}
+
 /**
- * Tambah soal baru
+ * Tambah banyak soal sekaligus (dipakai oleh Upload Excel maupun form tambah soal).
+ * Jika kolom tambahan (topic / wrong_answers / keywords) belum ada di database,
+ * soal tetap disimpan dengan kolom dasar.
  */
+export async function createQuestionsBulk(items: QuestionInsert[]): Promise<Question[]> {
+  if (items.length === 0) return [];
+  const prepared = items.map((it) => ({
+    ...it,
+    question_image_url: it.question_image_url || null,
+    answer_image_url: it.answer_image_url || null,
+    explanation: it.explanation?.trim() || "-",
+    is_active: it.is_active ?? true,
+  }));
+
+  let { data, error } = await (supabase.from("questions") as any)
+    .insert(prepared.map((p) => buildQuestionPayload(p, true)))
+    .select();
+
+  if (error && isSchemaMissingError(error)) {
+    console.warn("Kolom tambahan soal belum ada, simpan dengan kolom dasar:", error.message);
+    ({ data, error } = await (supabase.from("questions") as any)
+      .insert(prepared.map((p) => buildQuestionPayload(p, false)))
+      .select());
+  }
+
+  if (error) throw friendlyDbError(error, "Gagal menyimpan soal ke database Supabase.");
+  return (data || []) as Question[];
+}
+
 export async function createQuestion(item: QuestionInsert): Promise<Question> {
-  const newQuestion: Question = {
-    id: `q_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-    ...item,
-    is_active: item.is_active ?? true,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-
-  if (!isSupabaseConfigured()) {
-    const questions = getLocalQuestions();
-    const updated = [newQuestion, ...questions];
-    saveLocalQuestions(updated);
-    return newQuestion;
-  }
-
-  try {
-    const { data, error } = await (supabase.from("questions") as any)
-      .insert([item])
-      .select()
-      .single();
-
-    if (error) throw error;
-    return data as Question;
-  } catch (err) {
-    console.warn("Gagal insert Supabase questions, simpan ke lokal:", err);
-    const questions = getLocalQuestions();
-    const updated = [newQuestion, ...questions];
-    saveLocalQuestions(updated);
-    return newQuestion;
-  }
+  const [created] = await createQuestionsBulk([item]);
+  if (!created) throw new Error("Soal tidak tersimpan di database Supabase.");
+  return created;
 }
 
-/**
- * Perbarui soal yang ada
- */
 export async function updateQuestion(id: string, updates: QuestionUpdate): Promise<Question | null> {
-  if (!isSupabaseConfigured()) {
-    const questions = getLocalQuestions();
-    const index = questions.findIndex((q) => q.id === id);
-    if (index === -1) return null;
-    questions[index] = { ...questions[index], ...updates, updated_at: new Date().toISOString() };
-    saveLocalQuestions(questions);
-    return questions[index];
-  }
+  let { data, error } = await (supabase.from("questions") as any)
+    .update(buildQuestionPayload(updates, true))
+    .eq("id", id)
+    .select()
+    .single();
 
-  try {
-    const { data, error } = await (supabase.from("questions") as any)
-      .update(updates)
+  if (error && isSchemaMissingError(error)) {
+    ({ data, error } = await (supabase.from("questions") as any)
+      .update(buildQuestionPayload(updates, false))
       .eq("id", id)
       .select()
-      .single();
-
-    if (error) throw error;
-    return data as Question;
-  } catch (err) {
-    console.warn("Gagal update soal di Supabase, fallback lokal:", err);
-    return null;
+      .single());
   }
+
+  if (error) throw friendlyDbError(error, "Gagal memperbarui soal di database Supabase.");
+  return data as Question;
 }
 
-/**
- * Hapus soal
- */
 export async function deleteQuestion(id: string): Promise<boolean> {
-  if (!isSupabaseConfigured()) {
-    const questions = getLocalQuestions();
-    const filtered = questions.filter((q) => q.id !== id);
-    saveLocalQuestions(filtered);
-    return true;
-  }
-
-  try {
-    const { error } = await supabase.from("questions").delete().eq("id", id);
-    if (error) throw error;
-    return true;
-  } catch (err) {
-    console.error("Gagal hapus soal di Supabase:", err);
-    return false;
-  }
+  const { error } = await supabase.from("questions").delete().eq("id", id);
+  if (error) throw friendlyDbError(error, "Gagal menghapus soal.");
+  return true;
 }
 
 // ==============================================================================
-// 3. GAME SESSIONS & ASSESSMENT REPORTS
+// 5. GAME SESSIONS & ASSESSMENT REPORTS (Langsung ke Supabase - Tanpa Cache)
 // ==============================================================================
 
 /**
- * Cek apakah string merupakan UUID valid (format PostgreSQL)
- */
-function isValidUUID(str?: string | null): boolean {
-  if (!str) return false;
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(str);
-}
-
-/**
- * Buat sesi game baru untuk murid
+ * Buat sesi game baru untuk murid langsung di database Supabase
  */
 export async function createGameSession(sessionData: GameSessionInsert): Promise<GameSession> {
-  const newSession: GameSession = {
-    id: `sess_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+  const basePayload: any = {
     room_code: sessionData.room_code || "MIN1-ENDE",
     student_name: sessionData.student_name,
     student_class: sessionData.student_class,
     player_mode: sessionData.player_mode || "individual",
-    group_members: sessionData.group_members || "",
+    group_members: sessionData.group_members || null,
     subject: sessionData.subject || "Semua Mapel",
     topic: sessionData.topic || "Semua Materi",
     student_id: sessionData.student_id || null,
     difficulty_level: sessionData.difficulty_level,
     total_questions: sessionData.total_questions,
-    correct_answers: sessionData.correct_answers || 0,
     time_limit_seconds: sessionData.time_limit_seconds || 300,
-    time_spent_seconds: sessionData.time_spent_seconds || 0,
-    score_pairing: sessionData.score_pairing || 0,
-    score_argumentation: sessionData.score_argumentation || 0,
-    score_activity: sessionData.score_activity || 0,
-    score_time: sessionData.score_time || 0,
-    final_score: sessionData.final_score || 0,
     status: sessionData.status || "in_progress",
-    created_at: new Date().toISOString(),
   };
 
-  if (!isSupabaseConfigured()) {
-    const sessions = getLocalSessions();
-    saveLocalSessions([newSession, ...sessions]);
-    return newSession;
-  }
-
   try {
-    // 1. Coba insert dengan seluruh data (jika kolom baru sudah ada di Supabase)
     const { data, error } = await (supabase.from("game_sessions") as any)
-      .insert([sessionData])
-      .select()
-      .single();
-
-    if (!error && data) {
-      const created: GameSession = {
-        ...newSession,
-        ...data,
-      };
-      const sessions = getLocalSessions();
-      saveLocalSessions([created, ...sessions]);
-      return created;
-    }
-
-    // 2. Jika gagal karena kolom baru (player_mode / subject / topic) belum ada di skema SQL Supabase,
-    // gunakan kolom dasar yang pasti ada di database PostgreSQL
-    const basePayload: any = {
-      room_code: sessionData.room_code || "MIN1-ENDE",
-      student_name: sessionData.student_name,
-      student_class: sessionData.student_class,
-      student_id: sessionData.student_id || null,
-      difficulty_level: sessionData.difficulty_level,
-      total_questions: sessionData.total_questions,
-      time_limit_seconds: sessionData.time_limit_seconds || 300,
-      status: sessionData.status || "in_progress",
-    };
-
-    const { data: baseData, error: baseError } = await (supabase.from("game_sessions") as any)
       .insert([basePayload])
       .select()
       .single();
 
-    if (baseError) throw baseError;
+    if (error) {
+      const minimalPayload: any = {
+        room_code: sessionData.room_code || "MIN1-ENDE",
+        student_name: sessionData.student_name,
+        student_class: sessionData.student_class,
+        difficulty_level: sessionData.difficulty_level,
+        total_questions: sessionData.total_questions,
+        time_limit_seconds: sessionData.time_limit_seconds || 300,
+        status: sessionData.status || "in_progress",
+      };
+      const { data: retryData, error: retryErr } = await (supabase.from("game_sessions") as any)
+        .insert([minimalPayload])
+        .select()
+        .single();
+      if (retryErr) throw retryErr;
+      return retryData as GameSession;
+    }
 
-    const created: GameSession = {
-      ...newSession,
-      ...baseData,
-      player_mode: sessionData.player_mode,
-      group_members: sessionData.group_members,
-      subject: sessionData.subject,
-      topic: sessionData.topic,
-    };
-    const sessions = getLocalSessions();
-    saveLocalSessions([created, ...sessions]);
-    return created;
-  } catch (err) {
-    console.warn("Gagal create game_sessions di Supabase, fallback lokal:", err);
-    const sessions = getLocalSessions();
-    saveLocalSessions([newSession, ...sessions]);
-    return newSession;
+    return data as GameSession;
+  } catch (err: any) {
+    console.error("Gagal create game_sessions di Supabase:", err);
+    throw new Error(err.message || "Gagal membuat sesi di Supabase");
   }
 }
 
 /**
- * Perbarui sesi game (hasil akhir skor / status)
+ * Perbarui sesi game langsung di database Supabase
  */
 export async function updateGameSession(
   sessionId: string,
   updates: Partial<GameSession>
 ): Promise<GameSession | null> {
-  const isUUID = isValidUUID(sessionId);
-
-  // Jika bukan UUID valid atau Supabase tidak aktif, langsung perbarui di local storage
-  if (!isSupabaseConfigured() || !isUUID) {
-    const sessions = getLocalSessions();
-    const idx = sessions.findIndex((s) => s.id === sessionId);
-    if (idx !== -1) {
-      sessions[idx] = { ...sessions[idx], ...updates };
-      saveLocalSessions(sessions);
-      return sessions[idx];
-    }
-    const fallback: GameSession = {
-      id: sessionId,
-      room_code: "MIN1-ENDE",
-      student_name: "Murid",
-      student_class: "5A",
-      difficulty_level: "Easy",
-      total_questions: 4,
-      correct_answers: 0,
-      time_limit_seconds: 300,
-      time_spent_seconds: 0,
-      score_pairing: 0,
-      score_argumentation: 0,
-      score_activity: 0,
-      score_time: 0,
-      final_score: 0,
-      status: "completed",
-      created_at: new Date().toISOString(),
-      ...updates,
-    };
-    saveLocalSessions([fallback, ...sessions]);
-    return fallback;
-  }
-
-  // Jika UUID valid, perbarui di Supabase PostgreSQL
   try {
     const allowedKeys = [
       "correct_answers",
@@ -691,142 +786,111 @@ export async function updateGameSession(
     const { data, error } = await (supabase.from("game_sessions") as any)
       .update(sanitizedUpdates)
       .eq("id", sessionId)
-      .select();
+      .select()
+      .single();
 
     if (error) throw error;
-
-    let updatedSession: GameSession;
-    if (data && data.length > 0) {
-      updatedSession = { ...data[0], ...updates } as GameSession;
-    } else {
-      updatedSession = { id: sessionId, ...updates } as any;
-    }
-
-    // Selalu sinkronkan cache sesi lokal
-    const sessions = getLocalSessions();
-    const idx = sessions.findIndex((s) => s.id === sessionId);
-    if (idx !== -1) {
-      sessions[idx] = { ...sessions[idx], ...updatedSession };
-      saveLocalSessions(sessions);
-    }
-    return updatedSession;
+    return (data as GameSession) || null;
   } catch (err) {
-    console.warn("Gagal update game_sessions di Supabase, fallback lokal:", err);
-    // Selalu fallback ke update lokal agar game murid tetap berjalan mulus
-    const sessions = getLocalSessions();
-    const idx = sessions.findIndex((s) => s.id === sessionId);
-    if (idx !== -1) {
-      sessions[idx] = { ...sessions[idx], ...updates };
-      saveLocalSessions(sessions);
-      return sessions[idx];
-    }
-    return { id: sessionId, ...updates } as any;
+    console.error("Gagal update game_sessions di Supabase:", err);
+    return null;
   }
 }
 
 /**
- * Hapus sesi game dari riwayat (baik di Supabase maupun LocalStorage)
+ * Hapus sesi game langsung dari database Supabase
  */
 export async function deleteGameSession(sessionId: string): Promise<boolean> {
-  // 1. Selalu catat di daftar deleted sessions dan bersihkan dari cache LocalStorage
-  markSessionAsDeleted(sessionId);
-
-  const sessions = getLocalSessions();
-  const filteredSessions = sessions.filter((s) => s.id !== sessionId);
-  saveLocalSessions(filteredSessions);
-
-  const answers = getLocalAnswers();
-  const filteredAnswers = answers.filter((a) => a.session_id !== sessionId);
-  saveLocalAnswers(filteredAnswers);
-
-  const isUUID = isValidUUID(sessionId);
-
-  // Jika Supabase tidak aktif atau bukan UUID valid, penghapusan lokal sudah cukup
-  if (!isSupabaseConfigured() || !isUUID) {
-    return true;
-  }
-
-  // 2. Jika UUID valid dan Supabase aktif, hapus dari PostgreSQL Supabase
   try {
     await (supabase.from("session_answers") as any).delete().eq("session_id", sessionId);
-    const { error } = await supabase.from("game_sessions").delete().eq("id", sessionId);
-    if (error) {
-      console.warn("Catatan hapus game_sessions Supabase (RLS atau batasan):", error.message);
+    const { data, error } = await supabase
+      .from("game_sessions")
+      .delete()
+      .eq("id", sessionId)
+      .select("id");
+    if (error) throw error;
+    if (!data || data.length === 0) {
+      throw new Error(
+        "Database Supabase menolak penghapusan (kebijakan DELETE RLS belum aktif). Jalankan file migrasi supabase/migrations/20261127_revisi_soal_kelas.sql di Supabase SQL Editor."
+      );
     }
     return true;
-  } catch (err) {
-    console.warn("Error saat menghapus game_sessions Supabase:", err);
-    return true;
+  } catch (err: any) {
+    console.error("Error saat menghapus game_sessions di Supabase:", err);
+    throw err;
   }
 }
 
 /**
- * Simpan detail jawaban & argumentasi per kartu
+ * Hapus seluruh riwayat assessment (session_answers & game_sessions) di database Supabase
+ */
+export async function deleteAllGameSessions(): Promise<boolean> {
+  try {
+    const { error: ansErr } = await (supabase.from("session_answers") as any)
+      .delete()
+      .not("id", "is", null);
+    if (ansErr) throw ansErr;
+
+    const { error: sessErr } = await (supabase.from("game_sessions") as any)
+      .delete()
+      .not("id", "is", null);
+    if (sessErr) throw sessErr;
+
+    // Pastikan data benar-benar terhapus di Supabase (tidak terblokir RLS)
+    const { count } = await supabase
+      .from("game_sessions")
+      .select("id", { count: "exact", head: true });
+    if (count && count > 0) {
+      throw new Error(
+        "Data di Supabase tidak terhapus karena kebijakan DELETE RLS belum diaktifkan. Jalankan file migrasi supabase/migrations/20261127_revisi_soal_kelas.sql di Supabase SQL Editor."
+      );
+    }
+
+    return true;
+  } catch (err: any) {
+    console.error("Error saat menghapus semua game_sessions di Supabase:", err);
+    throw err;
+  }
+}
+
+/**
+ * Simpan detail jawaban & argumentasi per kartu langsung ke Supabase
  */
 export async function saveSessionAnswer(answerData: SessionAnswerInsert): Promise<SessionAnswer> {
-  const newAnswer: SessionAnswer = {
-    id: `ans_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-    ...answerData,
+  const payload: any = {
+    session_id: answerData.session_id,
+    question_id: answerData.question_id,
+    user_answer_text: answerData.user_answer_text,
+    is_correct: answerData.is_correct,
+    argument_type: answerData.argument_type,
+    argument_text: answerData.argument_text || null,
+    argument_audio_url: answerData.argument_audio_url || null,
     argument_score: answerData.argument_score ?? 70,
-    submitted_at: new Date().toISOString(),
   };
-
-  const canSendToSupabase =
-    isSupabaseConfigured() &&
-    isValidUUID(answerData.session_id) &&
-    isValidUUID(answerData.question_id);
-
-  if (!canSendToSupabase) {
-    const answers = getLocalAnswers();
-    saveLocalAnswers([newAnswer, ...answers]);
-    return newAnswer;
-  }
 
   try {
     const { data, error } = await (supabase.from("session_answers") as any)
-      .insert([answerData])
+      .insert([payload])
       .select()
       .single();
 
     if (error) throw error;
     return data as SessionAnswer;
   } catch (err) {
-    console.warn("Gagal simpan session_answers di Supabase, fallback lokal:", err);
-    const answers = getLocalAnswers();
-    saveLocalAnswers([newAnswer, ...answers]);
-    return newAnswer;
+    console.error("Gagal simpan session_answers di Supabase:", err);
+    return {
+      id: `ans_${Date.now()}`,
+      ...answerData,
+      argument_score: answerData.argument_score ?? 70,
+      submitted_at: new Date().toISOString(),
+    } as SessionAnswer;
   }
 }
 
 /**
- * Ambil daftar semua sesi game (Assessment Report) beserta detail jawaban
+ * Ambil daftar semua sesi game (Assessment Report) langsung dari database Supabase
  */
 export async function getGameSessionsReport(): Promise<GameSession[]> {
-  const deletedIds = getDeletedSessionIds();
-
-  if (!isSupabaseConfigured()) {
-    const sessions = getLocalSessions();
-    const answers = getLocalAnswers();
-    const questions = getLocalQuestions();
-
-    const mapped = sessions
-      .filter((s) => !deletedIds.includes(s.id))
-      .map((s) => ({
-        ...s,
-        answers: answers
-          .filter((a) => a.session_id === s.id)
-          .map((a) => ({
-            ...a,
-            question: questions.find((q) => q.id === a.question_id),
-          })),
-      }));
-
-    // Saring sesi hantu (in_progress kosong tanpa jawaban)
-    return mapped.filter(
-      (s) => s.status !== "in_progress" || (s.answers && s.answers.length > 0) || Number(s.final_score) > 0
-    );
-  }
-
   try {
     const { data, error } = await supabase
       .from("game_sessions")
@@ -841,40 +905,24 @@ export async function getGameSessionsReport(): Promise<GameSession[]> {
 
     if (error) throw error;
 
-    // Filter agar sesi kosong tanpa jawaban serta sesi yang sudah dihapus tidak muncul
     const list = (data || []) as GameSession[];
     return list.filter(
-      (s) =>
-        !deletedIds.includes(s.id) &&
-        (s.status !== "in_progress" || (s.answers && s.answers.length > 0) || Number(s.final_score) > 0)
+      (s) => s.status !== "in_progress" || (s.answers && s.answers.length > 0) || Number(s.final_score) > 0
     );
   } catch (err) {
-    console.warn("Gagal query assessment report di Supabase, fallback lokal:", err);
-    const sessions = getLocalSessions();
-    return sessions.filter((s) => !deletedIds.includes(s.id));
+    console.error("Gagal query assessment report di Supabase:", err);
+    return [];
   }
 }
 
 /**
- * Perbarui nilai kualitas argumentasi oleh Guru
+ * Perbarui nilai kualitas argumentasi oleh Guru langsung di database Supabase
  */
 export async function updateArgumentScore(
   answerId: string,
   newScore: number,
   comment?: string
 ): Promise<boolean> {
-  if (!isSupabaseConfigured()) {
-    const answers = getLocalAnswers();
-    const idx = answers.findIndex((a) => a.id === answerId);
-    if (idx !== -1) {
-      answers[idx].argument_score = newScore;
-      if (comment !== undefined) answers[idx].teacher_comment = comment;
-      saveLocalAnswers(answers);
-      return true;
-    }
-    return false;
-  }
-
   try {
     const payload: any = { argument_score: newScore };
     if (comment !== undefined) payload.teacher_comment = comment;
@@ -886,7 +934,7 @@ export async function updateArgumentScore(
     if (error) throw error;
     return true;
   } catch (err) {
-    console.error("Gagal update skor argumentasi:", err);
+    console.error("Gagal update skor argumentasi di Supabase:", err);
     return false;
   }
 }

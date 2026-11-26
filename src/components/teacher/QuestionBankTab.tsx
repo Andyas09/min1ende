@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Question, QuestionInsert, CognitiveLevel, SubjectItem } from "@/types";
+import { Question, QuestionInsert, CognitiveLevel, SubjectItem, Semester } from "@/types";
 import { BLOOM_LEVELS } from "@/lib/seed-data";
 import {
   getAllQuestionsForTeacher,
@@ -11,6 +11,8 @@ import {
   uploadQuestionImage,
   getSubjects,
 } from "@/lib/supabase";
+import { subjectMatches } from "@/lib/game-engine";
+import { ExcelImportModal } from "./ExcelImportModal";
 import {
   Plus,
   Search,
@@ -23,27 +25,44 @@ import {
   Sparkles,
   BookOpen,
   Tag,
+  Layers,
+  FileSpreadsheet,
 } from "lucide-react";
 
-export function QuestionBankTab() {
+interface QuestionBankTabProps {
+  teacherSubject?: string;
+  isAdmin?: boolean;
+}
+
+export function QuestionBankTab({
+  teacherSubject = "Semua Mapel",
+  isAdmin = false,
+}: QuestionBankTabProps = {}) {
+  const isSubjectRestricted = !isAdmin && !!teacherSubject && teacherSubject !== "Semua Mapel";
+
   const [questions, setQuestions] = useState<Question[]>([]);
   const [subjects, setSubjects] = useState<SubjectItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedDifficulty, setSelectedDifficulty] = useState<string>("ALL");
   const [selectedSubjectFilter, setSelectedSubjectFilter] = useState<string>("ALL");
+  const [selectedSemesterFilter, setSelectedSemesterFilter] = useState<"ALL" | Semester>("ALL");
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isExcelModalOpen, setIsExcelModalOpen] = useState(false);
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
+  const [keywordsInput, setKeywordsInput] = useState("");
 
   // Form State
   const [formData, setFormData] = useState<QuestionInsert>({
     subject: "IPAS / Sains",
     topic: "Ekosistem & Hewan",
+    semester: 1,
     difficulty_level: "Easy",
     question_text: "",
     question_image_url: null,
     answer_text: "",
     answer_image_url: null,
+    wrong_answers: ["", "", ""],
     explanation: "",
     is_active: true,
   });
@@ -66,35 +85,50 @@ export function QuestionBankTab() {
 
   const openCreateModal = () => {
     setEditingQuestion(null);
-    const defaultSub = subjects[0]?.name || "IPAS / Sains";
-    const defaultTop = subjects[0]?.topics[1] || subjects[0]?.topics[0] || "Ekosistem & Hewan";
+    const targetSub = isSubjectRestricted
+      ? teacherSubject
+      : subjects[0]?.name || "IPAS / Sains";
+    const subObj = subjects.find(
+      (s) => s.name.toLowerCase() === targetSub.toLowerCase()
+    );
+    const defaultTop = subObj?.topics[0] || "Materi Pokok";
     setFormData({
-      subject: defaultSub,
+      subject: targetSub,
       topic: defaultTop,
+      semester: 1,
       difficulty_level: "Easy",
       question_text: "",
       question_image_url: null,
       answer_text: "",
       answer_image_url: null,
+      wrong_answers: ["", "", ""],
+      keywords: [],
       explanation: "",
       is_active: true,
     });
+    setKeywordsInput("");
     setIsModalOpen(true);
   };
 
   const openEditModal = (q: Question) => {
     setEditingQuestion(q);
+    const existingWrong = q.wrong_answers || [];
+    const existingKeywords = q.keywords || [];
     setFormData({
-      subject: q.subject,
+      subject: isSubjectRestricted ? teacherSubject : q.subject,
       topic: q.topic || "",
+      semester: q.semester || 1,
       difficulty_level: q.difficulty_level,
       question_text: q.question_text,
       question_image_url: q.question_image_url,
       answer_text: q.answer_text,
       answer_image_url: q.answer_image_url,
+      wrong_answers: [existingWrong[0] || "", existingWrong[1] || "", existingWrong[2] || ""],
+      keywords: existingKeywords,
       explanation: q.explanation,
       is_active: q.is_active,
     });
+    setKeywordsInput(existingKeywords.join(", "));
     setIsModalOpen(true);
   };
 
@@ -123,44 +157,80 @@ export function QuestionBankTab() {
       return;
     }
 
-    if (editingQuestion) {
-      const updated = await updateQuestion(editingQuestion.id, formData);
-      if (updated) {
-        setQuestions((prev) => prev.map((q) => (q.id === editingQuestion.id ? updated : q)));
-      }
-    } else {
-      const created = await createQuestion(formData);
-      setQuestions((prev) => [created, ...prev]);
-    }
+    const cleanedWrong = (formData.wrong_answers || [])
+      .map((w) => w.trim())
+      .filter((w) => w.length > 0 && w.toLowerCase() !== formData.answer_text.trim().toLowerCase());
 
-    setIsModalOpen(false);
+    const cleanedKeywords = keywordsInput
+      .split(/[,;]+/)
+      .map((k) => k.trim())
+      .filter((k) => k.length > 0);
+
+    const payload: QuestionInsert = {
+      ...formData,
+      wrong_answers: cleanedWrong,
+      keywords: cleanedKeywords,
+    };
+
+    try {
+      if (editingQuestion) {
+        const updated = await updateQuestion(editingQuestion.id, payload);
+        if (updated) {
+          setQuestions((prev) => prev.map((q) => (q.id === editingQuestion.id ? updated : q)));
+        }
+      } else {
+        const created = await createQuestion(payload);
+        setQuestions((prev) => [created, ...prev]);
+      }
+      setIsModalOpen(false);
+    } catch (err: any) {
+      alert(err?.message || "Gagal menyimpan soal ke Supabase.");
+    }
   };
 
   const handleDelete = async (id: string) => {
     if (confirm("Apakah Ustadz/Ustadzah yakin ingin menghapus soal pasangan ini?")) {
-      const success = await deleteQuestion(id);
-      if (success) {
-        setQuestions((prev) => prev.filter((q) => q.id !== id));
+      try {
+        const success = await deleteQuestion(id);
+        if (success) {
+          setQuestions((prev) => prev.filter((q) => q.id !== id));
+        }
+      } catch (err: any) {
+        alert(err?.message || "Gagal menghapus soal.");
       }
     }
   };
 
   const filteredQuestions = questions.filter((q) => {
+    // Jika guru terikat mapel tertentu dan bukan admin, hanya tampilkan soal mapel tersebut
+    if (isSubjectRestricted && !subjectMatches(q.subject, teacherSubject)) {
+      return false;
+    }
+
     const matchSearch =
       q.question_text.toLowerCase().includes(searchQuery.toLowerCase()) ||
       q.answer_text.toLowerCase().includes(searchQuery.toLowerCase()) ||
       q.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (q.topic && q.topic.toLowerCase().includes(searchQuery.toLowerCase()));
     const matchLevel = selectedDifficulty === "ALL" || q.difficulty_level === selectedDifficulty;
-    const matchSubject = selectedSubjectFilter === "ALL" || q.subject.toLowerCase().includes(selectedSubjectFilter.toLowerCase());
-    return matchSearch && matchLevel && matchSubject;
+    const matchSemester =
+      selectedSemesterFilter === "ALL" || (q.semester ?? 1) === selectedSemesterFilter;
+    const matchSubject =
+      isSubjectRestricted ||
+      selectedSubjectFilter === "ALL" ||
+      subjectMatches(q.subject, selectedSubjectFilter);
+    return matchSearch && matchLevel && matchSemester && matchSubject;
   });
 
-  // Topics for selected subject in modal form
+  // Topics for selected subject & semester in modal form
   const currentSubjectObj = subjects.find(
-    (s) => s.name.toLowerCase() === formData.subject.toLowerCase()
+    (s) => subjectMatches(s.name, formData.subject)
   );
-  const availableTopics = currentSubjectObj ? currentSubjectObj.topics : [];
+  const availableTopics = currentSubjectObj
+    ? formData.semester === 2
+      ? currentSubjectObj.topics_semester_2 || []
+      : currentSubjectObj.topics
+    : [];
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -172,18 +242,31 @@ export function QuestionBankTab() {
             Bank Soal Kartu Make A Match
           </h2>
           <p className="text-xs sm:text-sm font-bold text-slate-700 dark:text-slate-300 mt-0.5">
-            Kelola pasangan kartu soal & jawaban interaktif untuk MIN 1 Ende
+            {isSubjectRestricted
+              ? `Kelola bank soal khusus mata pelajaran ${teacherSubject} untuk MIN 1 Ende`
+              : "Kelola pasangan kartu soal & jawaban interaktif untuk MIN 1 Ende"}
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={openCreateModal}
-          className="flex items-center justify-center gap-2 px-5 py-3 rounded-2xl font-black text-sm text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-md shadow-emerald-600/20 active:scale-95 transition-transform cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Tambah Soal Baru</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => setIsExcelModalOpen(true)}
+            className="flex items-center justify-center gap-2 px-4 py-3 rounded-2xl font-black text-sm text-emerald-800 dark:text-emerald-200 bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/70 border-2 border-emerald-300 dark:border-emerald-700 shadow-sm active:scale-95 transition-transform cursor-pointer"
+          >
+            <FileSpreadsheet className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+            <span>Upload Soal (Excel / Word)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={openCreateModal}
+            className="flex items-center justify-center gap-2 px-5 py-3 rounded-2xl font-black text-sm text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-md shadow-emerald-600/20 active:scale-95 transition-transform cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Tambah Soal Baru</span>
+          </button>
+        </div>
       </div>
 
       {/* Filter & Search Bar */}
@@ -201,17 +284,38 @@ export function QuestionBankTab() {
 
         {/* Filter Mapel */}
         <div className="flex items-center gap-2 overflow-x-auto pb-1 lg:pb-0">
+          {isSubjectRestricted ? (
+            <div className="px-3.5 py-3 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border-2 border-emerald-300 dark:border-emerald-700 text-xs font-black text-emerald-800 dark:text-emerald-300 shadow-sm flex items-center gap-1.5 whitespace-nowrap">
+              <Tag className="w-3.5 h-3.5" />
+              <span>Mapel Anda: {teacherSubject}</span>
+            </div>
+          ) : (
+            <select
+              value={selectedSubjectFilter}
+              onChange={(e) => setSelectedSubjectFilter(e.target.value)}
+              className="px-3.5 py-3 rounded-2xl bg-white dark:bg-slate-900 border-2 border-slate-200 dark:border-slate-800 text-xs font-black text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm cursor-pointer"
+            >
+              <option value="ALL">Semua Mata Pelajaran</option>
+              {subjects.map((sub) => (
+                <option key={sub.id} value={sub.name}>
+                  {sub.icon} {sub.name}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {/* Filter Semester */}
           <select
-            value={selectedSubjectFilter}
-            onChange={(e) => setSelectedSubjectFilter(e.target.value)}
+            value={selectedSemesterFilter}
+            onChange={(e) => {
+              const val = e.target.value;
+              setSelectedSemesterFilter(val === "ALL" ? "ALL" : (Number(val) as Semester));
+            }}
             className="px-3.5 py-3 rounded-2xl bg-white dark:bg-slate-900 border-2 border-slate-200 dark:border-slate-800 text-xs font-black text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm cursor-pointer"
           >
-            <option value="ALL">Semua Mata Pelajaran</option>
-            {subjects.map((sub) => (
-              <option key={sub.id} value={sub.name}>
-                {sub.icon} {sub.name}
-              </option>
-            ))}
+            <option value="ALL">Semua Semester</option>
+            <option value={1}>Semester 1</option>
+            <option value={2}>Semester 2</option>
           </select>
 
           {/* Filter Level */}
@@ -265,6 +369,15 @@ export function QuestionBankTab() {
                       <span className="text-[11px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700">
                         {q.subject}
                       </span>
+                      <span
+                        className={`text-[10px] font-black px-2 py-0.5 rounded-md border ${
+                          (q.semester ?? 1) === 2
+                            ? "bg-purple-50 dark:bg-purple-950/60 text-purple-800 dark:text-purple-300 border-purple-200 dark:border-purple-800"
+                            : "bg-blue-50 dark:bg-blue-950/60 text-blue-800 dark:text-blue-300 border-blue-200 dark:border-blue-800"
+                        }`}
+                      >
+                        Sem {q.semester ?? 1}
+                      </span>
                       {q.topic && (
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
                           {q.topic}
@@ -304,6 +417,16 @@ export function QuestionBankTab() {
                       <p className="text-xs sm:text-sm font-black text-emerald-950 dark:text-emerald-200 mt-0.5">
                         {q.answer_text}
                       </p>
+                      {q.wrong_answers && q.wrong_answers.length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-emerald-200/60 dark:border-emerald-800/60 flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">Pengecoh:</span>
+                          {q.wrong_answers.map((wa, i) => (
+                            <span key={i} className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/50 text-rose-800 dark:text-rose-300 border border-rose-200 dark:border-rose-900">
+                              {wa}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -359,27 +482,66 @@ export function QuestionBankTab() {
             </p>
 
             <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {/* Mata Pelajaran */}
                 <div>
                   <label className="block text-xs font-black text-slate-900 dark:text-slate-100 mb-1.5">
-                    Mata Pelajaran
+                    Mata Pelajaran {isSubjectRestricted && <span className="text-emerald-600 dark:text-emerald-400 font-bold">(Terkunci)</span>}
+                  </label>
+                  {isSubjectRestricted ? (
+                    <div className="w-full px-3 py-2.5 rounded-2xl bg-slate-100 dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-black text-slate-900 dark:text-slate-100 flex items-center justify-between">
+                      <span>{teacherSubject}</span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200">
+                        Mapel Anda
+                      </span>
+                    </div>
+                  ) : (
+                    <select
+                      value={formData.subject}
+                      onChange={(e) => {
+                        const newSub = e.target.value;
+                        const subObj = subjects.find((s) => s.name === newSub);
+                        const semTopics =
+                          formData.semester === 2
+                            ? subObj?.topics_semester_2 || []
+                            : subObj?.topics || [];
+                        const defaultTop = semTopics[0] || "";
+                        setFormData({ ...formData, subject: newSub, topic: defaultTop });
+                      }}
+                      className="w-full px-3 py-2.5 rounded-2xl bg-slate-50 dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-bold text-slate-950 dark:text-slate-50 focus:ring-2 focus:ring-emerald-500"
+                    >
+                      {subjects.map((sub) => (
+                        <option key={sub.id} value={sub.name}>
+                          {sub.icon} {sub.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                {/* Semester */}
+                <div>
+                  <label className="block text-xs font-black text-slate-900 dark:text-slate-100 mb-1.5">
+                    Semester
                   </label>
                   <select
-                    value={formData.subject}
+                    value={formData.semester || 1}
                     onChange={(e) => {
-                      const newSub = e.target.value;
-                      const subObj = subjects.find((s) => s.name === newSub);
-                      const defaultTop = subObj?.topics[0] || "";
-                      setFormData({ ...formData, subject: newSub, topic: defaultTop });
+                      const newSem = Number(e.target.value) as Semester;
+                      const semTopics =
+                        newSem === 2
+                          ? currentSubjectObj?.topics_semester_2 || []
+                          : currentSubjectObj?.topics || [];
+                      setFormData({
+                        ...formData,
+                        semester: newSem,
+                        topic: semTopics[0] || "",
+                      });
                     }}
                     className="w-full px-3 py-2.5 rounded-2xl bg-slate-50 dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-bold text-slate-950 dark:text-slate-50 focus:ring-2 focus:ring-emerald-500"
                   >
-                    {subjects.map((sub) => (
-                      <option key={sub.id} value={sub.name}>
-                        {sub.icon} {sub.name}
-                      </option>
-                    ))}
+                    <option value={1}>Semester 1 (Ganjil)</option>
+                    <option value={2}>Semester 2 (Genap)</option>
                   </select>
                 </div>
 
@@ -477,6 +639,55 @@ export function QuestionBankTab() {
                 />
               </div>
 
+              {/* Pilihan Kartu Jawaban Salah / Pengecoh (Distractors) */}
+              <div className="p-4 rounded-2xl bg-amber-50/70 dark:bg-amber-950/30 border-2 border-amber-200 dark:border-amber-800/60 space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-black text-amber-950 dark:text-amber-200 flex items-center gap-1.5">
+                    <Layers className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                    <span>Pilihan Kartu Jawaban Salah / Pengecoh (Opsional)</span>
+                  </label>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-100 dark:bg-amber-900/60 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700">
+                    Maksimal 3 Pengecoh
+                  </span>
+                </div>
+                <p className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 leading-snug">
+                  Kartu pengecoh akan dimunculkan bersama kartu jawaban kunci saat murid bermain (total 4 pilihan kartu). Jika dikosongkan, sistem secara otomatis mengambil pengecoh dari bank soal lain.
+                </p>
+                <div className="space-y-2">
+                  {[0, 1, 2].map((idx) => (
+                    <input
+                      key={idx}
+                      type="text"
+                      value={formData.wrong_answers?.[idx] || ""}
+                      onChange={(e) => {
+                        const updatedWrong = [...(formData.wrong_answers || ["", "", ""])];
+                        updatedWrong[idx] = e.target.value;
+                        setFormData({ ...formData, wrong_answers: updatedWrong });
+                      }}
+                      placeholder={`Pilihan kartu salah / pengecoh ${idx + 1}...`}
+                      className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-bold text-slate-950 dark:text-slate-50 focus:ring-2 focus:ring-amber-500 placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* Kata Kunci Argumentasi */}
+              <div>
+                <label className="block text-xs font-black text-slate-900 dark:text-slate-100 mb-1.5">
+                  Kata Kunci Wajib dalam Argumentasi (Pisahkan dengan koma)
+                </label>
+                <input
+                  type="text"
+                  value={keywordsInput}
+                  onChange={(e) => setKeywordsInput(e.target.value)}
+                  placeholder="Contoh: herbivora, tumbuhan, rumput (opsional, otomatis dari kunci jawaban jika kosong)"
+                  className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-bold text-slate-950 dark:text-slate-50 focus:ring-2 focus:ring-emerald-500 placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                />
+                <p className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 mt-1">
+                  Jika penjelasan murid tidak memuat salah satu kata kunci ini, argumentasi dianggap tidak sesuai.
+                </p>
+              </div>
+
               {/* Teks Pembahasan / Penjelasan Edukatif */}
               <div>
                 <label className="block text-xs font-black text-slate-900 dark:text-slate-100 mb-1.5">
@@ -511,6 +722,17 @@ export function QuestionBankTab() {
           </div>
         </div>
       )}
+      {/* MODAL UPLOAD EXCEL */}
+      <ExcelImportModal
+        isOpen={isExcelModalOpen}
+        onClose={() => setIsExcelModalOpen(false)}
+        onImported={(created) => {
+          setQuestions((prev) => [...created, ...prev]);
+        }}
+        teacherSubject={teacherSubject}
+        isSubjectRestricted={isSubjectRestricted}
+        subjects={subjects}
+      />
     </div>
   );
 }

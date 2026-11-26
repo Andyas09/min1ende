@@ -7,14 +7,23 @@ export type UserRole = 'guru' | 'murid' | 'admin';
 export type CognitiveLevel = 'Easy' | 'Medium' | 'HOTS';
 export type ArgumentType = 'voice' | 'text';
 export type SessionStatus = 'in_progress' | 'completed' | 'reviewed';
-export type PlayerMode = 'individual' | 'group';
+export type PlayerMode = 'individual' | 'pair' | 'group';
+export type Semester = 1 | 2;
+
+export interface ClassItem {
+  id: string;
+  name: string;
+  description?: string | null;
+  created_at?: string;
+}
 
 export interface SubjectItem {
   id: string;
   name: string;
   icon?: string;
   description?: string;
-  topics: string[];
+  topics: string[];              // Materi Semester 1 / Umum
+  topics_semester_2?: string[];  // Materi Semester 2
   created_at?: string;
 }
 
@@ -22,6 +31,8 @@ export interface Profile {
   id: string;
   full_name: string;
   email?: string | null;
+  password?: string | null;
+  subject?: string | null;
   role: UserRole;
   school: string;
   avatar_url?: string | null;
@@ -34,11 +45,14 @@ export interface Question {
   created_by?: string | null;
   subject: string;
   topic?: string;
+  semester?: Semester;
   difficulty_level: CognitiveLevel;
   question_text: string;
   question_image_url?: string | null;
   answer_text: string;
   answer_image_url?: string | null;
+  wrong_answers?: string[]; // Kartu jawaban salah / pengecoh (distractors)
+  keywords?: string[]; // Kata kunci wajib dalam argumentasi
   explanation: string;
   is_active: boolean;
   created_at: string;
@@ -50,11 +64,14 @@ export interface QuestionInsert {
   created_by?: string | null;
   subject: string;
   topic?: string;
+  semester?: Semester;
   difficulty_level: CognitiveLevel;
   question_text: string;
   question_image_url?: string | null;
   answer_text: string;
   answer_image_url?: string | null;
+  wrong_answers?: string[]; // Kartu jawaban salah / pengecoh (distractors)
+  keywords?: string[]; // Kata kunci wajib dalam argumentasi
   explanation: string;
   is_active?: boolean;
 }
@@ -62,11 +79,14 @@ export interface QuestionInsert {
 export interface QuestionUpdate {
   subject?: string;
   topic?: string;
+  semester?: Semester;
   difficulty_level?: CognitiveLevel;
   question_text?: string;
   question_image_url?: string | null;
   answer_text?: string;
   answer_image_url?: string | null;
+  wrong_answers?: string[];
+  keywords?: string[];
   explanation?: string;
   is_active?: boolean;
 }

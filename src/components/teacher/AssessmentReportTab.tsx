@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { GameSession, SessionAnswer } from "@/types";
-import { getGameSessionsReport, updateArgumentScore, deleteGameSession } from "@/lib/supabase";
+import { getGameSessionsReport, updateArgumentScore, deleteGameSession, deleteAllGameSessions } from "@/lib/supabase";
 import { formatScore, formatTime, formatDateIndonesia } from "@/lib/utils";
 import { AudioPlayer } from "@/components/AudioPlayer";
 import {
@@ -32,6 +32,7 @@ export function AssessmentReportTab() {
   const [tempScore, setTempScore] = useState<number>(85);
   const [teacherComment, setTeacherComment] = useState<string>("");
   const [savingScore, setSavingScore] = useState(false);
+  const [deletingAll, setDeletingAll] = useState(false);
 
   const loadSessions = async () => {
     setLoading(true);
@@ -102,13 +103,42 @@ export function AssessmentReportTab() {
   // Handler Hapus Sesi
   const handleDeleteSession = async (sessionId: string) => {
     if (confirm("Hapus rekaman sesi murid ini dari laporan?")) {
-      const ok = await deleteGameSession(sessionId);
-      if (ok) {
-        setSessions((prev) => prev.filter((s) => s.id !== sessionId));
-        if (selectedSession?.id === sessionId) {
-          setSelectedSession(null);
+      try {
+        const ok = await deleteGameSession(sessionId);
+        if (ok) {
+          setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+          if (selectedSession?.id === sessionId) {
+            setSelectedSession(null);
+          }
         }
+      } catch (err: any) {
+        alert(err?.message || "Gagal menghapus sesi assessment di Supabase.");
       }
+    }
+  };
+
+  // Handler Hapus Semua Assessment
+  const handleDeleteAllSessions = async () => {
+    if (sessions.length === 0) return;
+    if (
+      !confirm(
+        `Apakah Anda yakin ingin menghapus SEMUA (${sessions.length}) data assessment murid secara permanen dari database Supabase? Tindakan ini tidak dapat dibatalkan.`
+      )
+    ) {
+      return;
+    }
+
+    setDeletingAll(true);
+    try {
+      const ok = await deleteAllGameSessions();
+      if (ok) {
+        setSessions([]);
+        setSelectedSession(null);
+      }
+    } catch (err: any) {
+      alert(err?.message || "Gagal menghapus semua assessment. Periksa kebijakan akses Supabase.");
+    } finally {
+      setDeletingAll(false);
     }
   };
 
@@ -227,14 +257,26 @@ export function AssessmentReportTab() {
           />
         </div>
 
-        <button
-          type="button"
-          onClick={handleExportCSV}
-          className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-2xl font-black text-xs sm:text-sm text-emerald-950 dark:text-emerald-100 bg-emerald-100 dark:bg-emerald-900/80 border-2 border-emerald-300 dark:border-emerald-700 hover:bg-emerald-200 dark:hover:bg-emerald-800 active:scale-95 transition-all shadow-sm cursor-pointer"
-        >
-          <FileSpreadsheet className="w-4 h-4" />
-          <span>Ekspor Rekap CSV / Excel</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={handleExportCSV}
+            className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-2xl font-black text-xs sm:text-sm text-emerald-950 dark:text-emerald-100 bg-emerald-100 dark:bg-emerald-900/80 border-2 border-emerald-300 dark:border-emerald-700 hover:bg-emerald-200 dark:hover:bg-emerald-800 active:scale-95 transition-all shadow-sm cursor-pointer"
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            <span>Ekspor Rekap CSV / Excel</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={sessions.length === 0 || deletingAll}
+            onClick={handleDeleteAllSessions}
+            className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl font-black text-xs sm:text-sm text-rose-950 dark:text-rose-100 bg-rose-100 dark:bg-rose-950/80 border-2 border-rose-300 dark:border-rose-800 hover:bg-rose-200 dark:hover:bg-rose-900 disabled:opacity-40 disabled:cursor-not-allowed active:scale-95 transition-all shadow-sm cursor-pointer"
+          >
+            <Trash2 className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+            <span>{deletingAll ? "Menghapus..." : "Hapus Semua Assessment"}</span>
+          </button>
+        </div>
       </div>
 
       {/* Assessment Table */}

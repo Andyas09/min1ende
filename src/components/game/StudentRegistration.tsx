@@ -2,9 +2,10 @@
 
 import React, { useState, useEffect } from "react";
 import Image from "next/image";
-import { StudentRegistration, CognitiveLevel, SubjectItem, PlayerMode } from "@/types";
+import { StudentRegistration, CognitiveLevel, SubjectItem, PlayerMode, ClassItem, Question } from "@/types";
 import { BLOOM_LEVELS } from "@/lib/seed-data";
-import { getSubjects } from "@/lib/supabase";
+import { getSubjects, getClasses, DEFAULT_CLASSES, getQuestions } from "@/lib/supabase";
+import { subjectMatches } from "@/lib/game-engine";
 import {
   Sparkles,
   Gamepad2,
@@ -32,16 +33,20 @@ export function StudentRegistrationForm({
   onStartGame,
   defaultRoomCode = "MIN1-ENDE",
 }: StudentRegistrationProps) {
-  // 1. Mode Pemain (Individu vs Kelompok)
+  // 1. Mode Pemain (Individu, Pasangan, Kelompok)
   const [playerMode, setPlayerMode] = useState<PlayerMode>("individual");
   const [studentName, setStudentName] = useState("");
+  const [pairName1, setPairName1] = useState("");
+  const [pairName2, setPairName2] = useState("");
   const [groupName, setGroupName] = useState("");
   const [groupMembers, setGroupMembers] = useState("");
+  const [classes, setClasses] = useState<ClassItem[]>(DEFAULT_CLASSES);
   const [studentClass, setStudentClass] = useState("5A");
   const [roomCode, setRoomCode] = useState(defaultRoomCode);
 
-  // 2. Mata Pelajaran & Materi
+  // 2. Mata Pelajaran & Materi & Bank Soal
   const [subjects, setSubjects] = useState<SubjectItem[]>([]);
+  const [allActiveQuestions, setAllActiveQuestions] = useState<Question[]>([]);
   const [selectedSubject, setSelectedSubject] = useState<string>("ALL");
   const [selectedTopic, setSelectedTopic] = useState<string>("ALL");
 
@@ -54,40 +59,123 @@ export function StudentRegistrationForm({
   // 5. Tingkat Kognitif Bloom
   const [difficulty, setDifficulty] = useState<CognitiveLevel>("Easy");
 
-  // Load Daftar Mata Pelajaran yang bisa di-CRUD oleh Guru
+  // Load Daftar Mata Pelajaran, Kelas & Soal Aktif dari Supabase
   useEffect(() => {
-    async function loadSubjectList() {
-      const data = await getSubjects();
-      setSubjects(data);
+    async function loadInitialLists() {
+      const [subData, classRes, qData] = await Promise.all([
+        getSubjects(),
+        getClasses(),
+        getQuestions(),
+      ]);
+      setSubjects(subData);
+      setAllActiveQuestions(qData);
+      if (classRes.classes && classRes.classes.length > 0) {
+        setClasses(classRes.classes);
+        if (!classRes.classes.some((c) => c.name === studentClass)) {
+          setStudentClass(classRes.classes[0].name);
+        }
+      }
     }
-    loadSubjectList();
+    loadInitialLists();
   }, []);
 
-  // Filter topik materi berdasarkan mapel terpilih
-  const currentSubjectObj = subjects.find(
-    (s) => s.name.toLowerCase() === selectedSubject.toLowerCase()
+  // Pool soal sesuai mapel dan materi terpilih
+  const topicPool = React.useMemo(() => {
+    if (allActiveQuestions.length === 0) return [];
+    const bySub =
+      selectedSubject === "ALL"
+        ? allActiveQuestions
+        : allActiveQuestions.filter((q) => subjectMatches(q.subject, selectedSubject));
+    if (bySub.length === 0) return [];
+    const byTopic =
+      selectedTopic === "ALL" || selectedTopic.startsWith("Semua Materi")
+        ? bySub
+        : bySub.filter(
+            (q) =>
+              !q.topic ||
+              q.topic.toLowerCase().includes(selectedTopic.toLowerCase()) ||
+              selectedTopic.toLowerCase().includes(q.topic.toLowerCase())
+          );
+    return byTopic.length > 0 ? byTopic : bySub;
+  }, [allActiveQuestions, selectedSubject, selectedTopic]);
+
+  // Jumlah soal per tingkat kesulitan pada mapel & materi terpilih
+  const levelCounts = React.useMemo(
+    () => ({
+      Easy: topicPool.filter((q) => q.difficulty_level === "Easy").length,
+      Medium: topicPool.filter((q) => q.difficulty_level === "Medium").length,
+      HOTS: topicPool.filter((q) => q.difficulty_level === "HOTS").length,
+    }),
+    [topicPool]
   );
-  const availableTopics = currentSubjectObj ? currentSubjectObj.topics : [];
+
+  // Otomatis pindah ke tingkat kesulitan yang tersedia jika level aktif kosong
+  useEffect(() => {
+    if (topicPool.length === 0) return;
+    if (levelCounts[difficulty] === 0) {
+      const firstAvailable = (["Easy", "Medium", "HOTS"] as CognitiveLevel[]).find(
+        (lvl) => levelCounts[lvl] > 0
+      );
+      if (firstAvailable) {
+        setDifficulty(firstAvailable);
+      }
+    }
+  }, [topicPool, levelCounts, difficulty]);
+
+  // Jumlah soal tersedia untuk level kesulitan terpilih
+  const availableQuestionsCount =
+    levelCounts[difficulty] > 0 ? levelCounts[difficulty] : topicPool.length;
+
+  // Sesuaikan jumlah soal terpilih agar tidak melebihi soal yang tersedia
+  useEffect(() => {
+    if (availableQuestionsCount > 0 && cardPairsCount > availableQuestionsCount) {
+      setCardPairsCount(availableQuestionsCount);
+    }
+  }, [availableQuestionsCount]);
+
+  // Filter topik materi berdasarkan mapel terpilih (gabungan Semester 1 & 2)
+  const currentSubjectObj = subjects.find(
+    (s) => subjectMatches(s.name, selectedSubject)
+  );
+  const availableTopics = React.useMemo(() => {
+    if (!currentSubjectObj) return [];
+    const s1 = currentSubjectObj.topics || [];
+    const s2 = currentSubjectObj.topics_semester_2 || [];
+    return Array.from(new Set([...s1, ...s2]));
+  }, [currentSubjectObj]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    const finalName =
-      playerMode === "individual" ? studentName.trim() : groupName.trim();
+    let finalName = "";
+    let finalMembers: string | undefined = undefined;
 
-    if (!finalName) {
-      alert(
-        playerMode === "individual"
-          ? "Harap masukkan nama lengkap murid."
-          : "Harap masukkan nama kelompok."
-      );
-      return;
+    if (playerMode === "individual") {
+      finalName = studentName.trim();
+      if (!finalName) {
+        alert("Harap masukkan nama lengkap murid.");
+        return;
+      }
+    } else if (playerMode === "pair") {
+      if (!pairName1.trim() || !pairName2.trim()) {
+        alert("Harap masukkan nama kedua siswa yang berpasangan.");
+        return;
+      }
+      finalName = `${pairName1.trim()} & ${pairName2.trim()}`;
+      finalMembers = `${pairName1.trim()}, ${pairName2.trim()}`;
+    } else {
+      finalName = groupName.trim();
+      if (!finalName) {
+        alert("Harap masukkan nama kelompok.");
+        return;
+      }
+      finalMembers = groupMembers.trim() || undefined;
     }
 
     onStartGame({
       playerMode,
       studentName: finalName,
-      groupMembers: playerMode === "group" ? groupMembers.trim() : undefined,
+      groupMembers: finalMembers,
       studentClass: studentClass.trim(),
       roomCode: roomCode.trim().toUpperCase() || "MIN1-ENDE",
       subject: selectedSubject,
@@ -102,9 +190,9 @@ export function StudentRegistrationForm({
   const PAIR_OPTIONS = [
     {
       pairs: 4,
-      cards: 8,
-      title: "4 Pasangan",
-      badge: "8 Kartu",
+      cards: 4,
+      title: "4 Soal",
+      badge: "4 Pilihan Kartu",
       subtitle: "Sesi Cepat",
       icon: Target,
       accent: "from-blue-500 to-cyan-500",
@@ -113,9 +201,9 @@ export function StudentRegistrationForm({
     },
     {
       pairs: 6,
-      cards: 12,
-      title: "6 Pasangan",
-      badge: "12 Kartu",
+      cards: 6,
+      title: "6 Soal",
+      badge: "4 Pilihan Kartu",
       subtitle: "Standar Kelas",
       icon: Zap,
       accent: "from-emerald-500 to-teal-500",
@@ -124,9 +212,9 @@ export function StudentRegistrationForm({
     },
     {
       pairs: 8,
-      cards: 16,
-      title: "8 Pasangan",
-      badge: "16 Kartu",
+      cards: 8,
+      title: "8 Soal",
+      badge: "4 Pilihan Kartu",
       subtitle: "Tantangan Kritis",
       icon: Brain,
       accent: "from-amber-500 to-orange-500",
@@ -135,9 +223,9 @@ export function StudentRegistrationForm({
     },
     {
       pairs: 10,
-      cards: 20,
-      title: "10 Pasangan",
-      badge: "20 Kartu",
+      cards: 10,
+      title: "10 Soal",
+      badge: "4 Pilihan Kartu",
       subtitle: "Ujian Komprehensif",
       icon: Trophy,
       accent: "from-purple-500 to-rose-500",
@@ -196,11 +284,11 @@ export function StudentRegistrationForm({
               </label>
 
               {/* Mode Toggle Pills */}
-              <div className="flex p-0.5 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+              <div className="flex flex-wrap p-0.5 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 gap-0.5">
                 <button
                   type="button"
                   onClick={() => setPlayerMode("individual")}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-black transition-all ${
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-black transition-all cursor-pointer ${
                     playerMode === "individual"
                       ? "bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-sm"
                       : "text-slate-600 dark:text-slate-400 hover:text-slate-950 dark:hover:text-white"
@@ -211,8 +299,20 @@ export function StudentRegistrationForm({
                 </button>
                 <button
                   type="button"
+                  onClick={() => setPlayerMode("pair")}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-black transition-all cursor-pointer ${
+                    playerMode === "pair"
+                      ? "bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-sm"
+                      : "text-slate-600 dark:text-slate-400 hover:text-slate-950 dark:hover:text-white"
+                  }`}
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  <span>Pasangan</span>
+                </button>
+                <button
+                  type="button"
                   onClick={() => setPlayerMode("group")}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-black transition-all ${
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-black transition-all cursor-pointer ${
                     playerMode === "group"
                       ? "bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-sm"
                       : "text-slate-600 dark:text-slate-400 hover:text-slate-950 dark:hover:text-white"
@@ -233,6 +333,25 @@ export function StudentRegistrationForm({
                   value={studentName}
                   onChange={(e) => setStudentName(e.target.value)}
                   placeholder="Ketik nama lengkapmu (contoh: Fatimah Azzahra / Ahmad Fauzan)"
+                  className="w-full px-4 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-700 text-sm font-bold text-slate-950 dark:text-slate-50 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 placeholder:text-slate-400 dark:placeholder:text-slate-500 transition-colors"
+                />
+              </div>
+            ) : playerMode === "pair" ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <input
+                  type="text"
+                  required
+                  value={pairName1}
+                  onChange={(e) => setPairName1(e.target.value)}
+                  placeholder="Nama Siswa 1 (contoh: Ahmad)"
+                  className="w-full px-4 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-700 text-sm font-bold text-slate-950 dark:text-slate-50 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 placeholder:text-slate-400 dark:placeholder:text-slate-500 transition-colors"
+                />
+                <input
+                  type="text"
+                  required
+                  value={pairName2}
+                  onChange={(e) => setPairName2(e.target.value)}
+                  placeholder="Nama Siswa 2 / Pasangan (contoh: Fatimah)"
                   className="w-full px-4 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-700 text-sm font-bold text-slate-950 dark:text-slate-50 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 placeholder:text-slate-400 dark:placeholder:text-slate-500 transition-colors"
                 />
               </div>
@@ -268,12 +387,11 @@ export function StudentRegistrationForm({
                   onChange={(e) => setStudentClass(e.target.value)}
                   className="w-full px-3 py-2.5 rounded-2xl bg-slate-50 dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-bold text-slate-950 dark:text-slate-50 focus:ring-2 focus:ring-emerald-500"
                 >
-                  <option value="4A">Kelas 4A</option>
-                  <option value="4B">Kelas 4B</option>
-                  <option value="5A">Kelas 5A</option>
-                  <option value="5B">Kelas 5B</option>
-                  <option value="6A">Kelas 6A</option>
-                  <option value="6B">Kelas 6B</option>
+                  {classes.map((cls) => (
+                    <option key={cls.id} value={cls.name}>
+                      Kelas {cls.name}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -397,34 +515,58 @@ export function StudentRegistrationForm({
           </div>
 
           {/* ======================================================== */}
-          {/* BAGIAN 4: PILIHAN JUMLAH PASANGAN KARTU                  */}
-          {/* (Mengikuti Contoh Desain Berjejer Vertikal Kartu)         */}
+          {/* BAGIAN 4: PILIHAN JUMLAH SOAL PERMAINAN                  */}
           {/* ======================================================== */}
           <div className="pt-2 border-t-2 border-slate-100 dark:border-slate-800">
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
               <label className="text-xs font-black text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
                 <Target className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                <span>4. Pilih Jumlah Pasangan Kartu</span>
+                <span>4. Pilih Jumlah Soal Permainan</span>
               </label>
-              <span className="text-[11px] font-black text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-2.5 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800">
-                Terpilih: {cardPairsCount} Pasang ({cardPairsCount * 2} Kartu)
-              </span>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[11px] font-black text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/60 px-2.5 py-0.5 rounded-full border border-blue-200 dark:border-blue-800">
+                  Tersedia: {availableQuestionsCount} Soal
+                </span>
+                <span className="text-[11px] font-black text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-2.5 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800">
+                  Terpilih: {cardPairsCount} Soal
+                </span>
+              </div>
             </div>
+
+            {availableQuestionsCount > 0 && availableQuestionsCount < 4 && (
+              <div className="mb-2.5 p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 flex items-center justify-between gap-2 text-xs font-bold text-amber-950 dark:text-amber-200">
+                <span>
+                  Mapel/materi ini saat ini memiliki {availableQuestionsCount} soal aktif.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setCardPairsCount(availableQuestionsCount)}
+                  className="px-3 py-1 rounded-xl bg-amber-600 text-white font-black text-[11px] shrink-0 cursor-pointer"
+                >
+                  Pakai {availableQuestionsCount} Soal
+                </button>
+              </div>
+            )}
 
             {/* 4 Kolom Kartu Berjejer Melengkung seperti Referensi Gambar */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
               {PAIR_OPTIONS.map((opt) => {
                 const isSelected = cardPairsCount === opt.pairs;
+                const isUnavailable = availableQuestionsCount > 0 && opt.pairs > availableQuestionsCount;
                 const IconComp = opt.icon;
 
                 return (
                   <div
                     key={opt.pairs}
-                    onClick={() => setCardPairsCount(opt.pairs)}
-                    className={`group relative p-4 rounded-3xl border-2 cursor-pointer transition-all flex flex-col items-center justify-between text-center select-none ${
-                      isSelected
-                        ? "border-emerald-500 bg-emerald-50/90 dark:bg-emerald-950/60 shadow-lg shadow-emerald-500/15 ring-2 ring-emerald-500 scale-[1.02]"
-                        : "border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700 hover:bg-slate-50/60"
+                    onClick={() => {
+                      if (!isUnavailable) setCardPairsCount(opt.pairs);
+                    }}
+                    className={`group relative p-4 rounded-3xl border-2 transition-all flex flex-col items-center justify-between text-center select-none ${
+                      isUnavailable
+                        ? "opacity-40 cursor-not-allowed border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900"
+                        : isSelected
+                        ? "cursor-pointer border-emerald-500 bg-emerald-50/90 dark:bg-emerald-950/60 shadow-lg shadow-emerald-500/15 ring-2 ring-emerald-500 scale-[1.02]"
+                        : "cursor-pointer border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700 hover:bg-slate-50/60"
                     }`}
                   >
                     {/* Lingkaran Ikon Bagian Atas */}
@@ -456,7 +598,7 @@ export function StudentRegistrationForm({
                           : "bg-slate-100 dark:bg-slate-700/80 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-600"
                       }`}
                     >
-                      {opt.badge} Total
+                      {opt.badge}
                     </span>
                   </div>
                 );
@@ -562,15 +704,21 @@ export function StudentRegistrationForm({
               ).map((opt) => {
                 const isSelected = difficulty === opt.lvl;
                 const info = BLOOM_LEVELS[opt.lvl];
+                const lvlCount = levelCounts[opt.lvl];
+                const isLevelUnavailable = allActiveQuestions.length > 0 && lvlCount === 0;
 
                 return (
                   <div
                     key={opt.lvl}
-                    onClick={() => setDifficulty(opt.lvl)}
-                    className={`group relative cursor-pointer rounded-3xl border-2 transition-all overflow-hidden select-none ${
-                      isSelected
-                        ? `${opt.borderActive} ring-2 shadow-xl ${opt.glowColor} scale-[1.01] sm:scale-[1.02]`
-                        : `${opt.borderInactive} ${opt.bgInactive} shadow-sm hover:shadow-md`
+                    onClick={() => {
+                      if (!isLevelUnavailable) setDifficulty(opt.lvl);
+                    }}
+                    className={`group relative rounded-3xl border-2 transition-all overflow-hidden select-none ${
+                      isLevelUnavailable
+                        ? "opacity-40 cursor-not-allowed border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900"
+                        : isSelected
+                        ? `cursor-pointer ${opt.borderActive} ring-2 shadow-xl ${opt.glowColor} scale-[1.01] sm:scale-[1.02]`
+                        : `cursor-pointer ${opt.borderInactive} ${opt.bgInactive} shadow-sm hover:shadow-md`
                     }`}
                   >
                     {/* Kartu Berwarna Gradient untuk yang terpilih */}
@@ -621,7 +769,7 @@ export function StudentRegistrationForm({
                               : `bg-white dark:bg-slate-800 ${opt.textInactive} border-slate-200 dark:border-slate-700`
                           }`}
                         >
-                          {opt.code}
+                          {opt.code} • {lvlCount > 0 ? `${lvlCount} Soal` : "Kosong"}
                         </span>
                         <p
                           className={`text-[9px] sm:text-[10px] font-semibold leading-snug mt-1 hidden sm:block ${

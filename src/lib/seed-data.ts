@@ -98,6 +98,7 @@ export const INITIAL_QUESTIONS: Question[] = [
     difficulty_level: "Easy",
     question_text: "Hewan pemakan tumbuhan (seperti sapi dan kambing)",
     answer_text: "Herbivora",
+    wrong_answers: ["Karnivora", "Omnivora", "Insektivora"],
     explanation:
       "Herbivora adalah golongan hewan yang mengonsumsi tumbuhan sebagai makanan utamanya, memiliki gigi seri dan geraham yang kuat untuk mengunyah rumput.",
     is_active: true,
@@ -111,6 +112,7 @@ export const INITIAL_QUESTIONS: Question[] = [
     difficulty_level: "Easy",
     question_text: "Hasil perhitungan dari 12 x 8",
     answer_text: "96",
+    wrong_answers: ["86", "106", "92"],
     explanation:
       "12 dikalikan 8 sama dengan 96. Dapat dihitung dengan cara distributif: (10 x 8) + (2 x 8) = 80 + 16 = 96.",
     is_active: true,
@@ -124,6 +126,7 @@ export const INITIAL_QUESTIONS: Question[] = [
     difficulty_level: "Easy",
     question_text: "Danau kawah tiga warna yang terkenal di Kabupaten Ende, Flores",
     answer_text: "Danau Kelimutu",
+    wrong_answers: ["Danau Toba", "Danau Ranau", "Danau Maninjau"],
     explanation:
       "Danau Kelimutu terletak di Gunung Kelimutu, Kabupaten Ende, Pulau Flores, NTT. Memiliki 3 danau kawah dengan warna unik yang dapat berganti akibat aktivitas mineral dan gas vulkanik.",
     is_active: true,
@@ -137,6 +140,7 @@ export const INITIAL_QUESTIONS: Question[] = [
     difficulty_level: "Easy",
     question_text: "Rukun Islam kedua setelah mengucapkan dua kalimat syahadat",
     answer_text: "Mendirikan Shalat",
+    wrong_answers: ["Membayar Zakat", "Berpuasa Ramadhan", "Menunaikan Haji"],
     explanation:
       "Rukun Islam yang fundamental terdiri dari: Mengucapkan Dua Kalimah Syahadat, Mendirikan Shalat 5 Waktu, Membayar Zakat, Berpuasa di Bulan Ramadhan, dan Menunaikan Haji bagi yang mampu.",
     is_active: true,
@@ -153,6 +157,7 @@ export const INITIAL_QUESTIONS: Question[] = [
     question_text:
       "Organ tumbuhan yang berperan paling utama dalam proses fotosintesis dengan bantuan klorofil",
     answer_text: "Daun",
+    wrong_answers: ["Akar", "Batang", "Bunga"],
     explanation:
       "Daun memiliki jaringan tiang (palisade) yang kaya klorofil untuk menyerap sinar matahari dan mengolah CO2 serta air menjadi glukosa dan oksigen.",
     is_active: true,
@@ -167,6 +172,7 @@ export const INITIAL_QUESTIONS: Question[] = [
     question_text:
       "Sebuah bangun persegi memiliki keliling 48 cm. Berapakah luas daerah persegi tersebut?",
     answer_text: "144 cm²",
+    wrong_answers: ["96 cm²", "196 cm²", "120 cm²"],
     explanation:
       "Panjang sisi persegi = Keliling / 4 = 48 / 4 = 12 cm. Luas persegi = sisi x sisi = 12 x 12 = 144 cm².",
     is_active: true,
@@ -181,6 +187,7 @@ export const INITIAL_QUESTIONS: Question[] = [
     question_text:
       "Kota bersejarah di Flores tempat Bung Karno diasingkan (1934-1938) dan merenungkan dasar Pancasila",
     answer_text: "Kota Ende",
+    wrong_answers: ["Kota Kupang", "Kota Maumere", "Kota Labuan Bajo"],
     explanation:
       "Bung Karno diasingkan oleh Belanda ke Ende dari tahun 1934 hingga 1938. Di bawah rindangnya pohon sukun bercabang lima dekat pantai Ende, gagasan luhur Pancasila direnungkan.",
     is_active: true,
@@ -195,6 +202,7 @@ export const INITIAL_QUESTIONS: Question[] = [
     question_text:
       "Peristiwa perubahan wujud benda dari padat langsung berubah menjadi gas tanpa fase cair",
     answer_text: "Menyublim",
+    wrong_answers: ["Membeku", "Mengembun", "Mencair"],
     explanation:
       "Menyublim adalah perubahan wujud dari padat langsung menjadi gas. Contoh nyatanya adalah kapur barus (kamper) atau es kering yang menguap di suhu ruang.",
     is_active: true,
@@ -211,6 +219,11 @@ export const INITIAL_QUESTIONS: Question[] = [
     question_text:
       "Jika populasi katak di ekosistem sawah menurun drastis akibat diburu manusia, apa dampak berantai yang terjadi?",
     answer_text: "Populasi belalang melonjak liar dan panen padi menurun drastis",
+    wrong_answers: [
+      "Populasi ular sawah bertambah banyak karena katak hilang",
+      "Tanaman padi menjadi semakin subur karena tidak ada katak",
+      "Populasi elang berpindah mencari makan di perkotaan",
+    ],
     explanation:
       "Dalam rantai makanan: Padi -> Belalang -> Katak -> Ular. Hilangnya predator alami (katak) menyebabkan ledakan hama belalang yang merusak tanaman padi petani.",
     is_active: true,
@@ -225,6 +238,7 @@ export const INITIAL_QUESTIONS: Question[] = [
     question_text:
       "Perbandingan tabungan Ahmad dan Budi adalah 3 : 5. Selisih uang mereka Rp 40.000. Berapa total uang keduanya?",
     answer_text: "Rp 160.000",
+    wrong_answers: ["Rp 120.000", "Rp 200.000", "Rp 80.000"],
     explanation:
       "Selisih rasio = 5 - 3 = 2 satuan. Nilai 1 satuan = Rp 40.000 / 2 = Rp 20.000. Jumlah total rasio = 3 + 5 = 8 satuan. Total uang = 8 x Rp 20.000 = Rp 160.000.",
     is_active: true,
@@ -239,6 +253,11 @@ export const INITIAL_QUESTIONS: Question[] = [
     question_text:
       "Mengapa kapal laut raksasa berbahan besi baja ribuan ton dapat mengapung, sedangkan jarum kecil tenggelam?",
     answer_text: "Hukum Archimedes: Lambung kapal berongga membuat massa jenis rata-ratanya lebih kecil dari air",
+    wrong_answers: [
+      "Besi kapal dilapisi cat anti air yang menolak molekul air laut",
+      "Air laut memiliki ombak besar yang terus mendorong kapal ke atas",
+      "Gaya gravitasi bumi di lautan lebih lemah dibanding di daratan",
+    ],
     explanation:
       "Kapal dirancang dengan rongga udara raksasa di lambungnya, sehingga volume air yang dipindahkan sangat besar dan menghasilkan gaya angkat ke atas yang melampaui berat total kapal.",
     is_active: true,
@@ -253,6 +272,11 @@ export const INITIAL_QUESTIONS: Question[] = [
     question_text:
       "Langkah nalar kritis seorang murid MIN 1 Ende yang berakhlak mulia saat menerima berita viral kontroversial di grup WhatsApp",
     answer_text: "Tabayyun: Mengkroscek fakta dari sumber terpercaya sebelum mempercayai atau membagikan",
+    wrong_answers: [
+      "Langsung meneruskan berita ke semua grup agar teman-teman waspada",
+      "Mengabaikan begitu saja tanpa peduli kebenaran beritanya",
+      "Menyukai dan memberi komentar provokatif di media sosial",
+    ],
     explanation:
       "Sesuai perintah Al-Qur'an (QS. Al-Hujurat: 6 tentang Tabayyun), seorang muslim wajib memverifikasi kebenaran informasi terlebih dahulu agar tidak menyebarkan fitnah atau kepalsuan.",
     is_active: true,

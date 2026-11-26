@@ -17,6 +17,7 @@ import {
   saveSessionAnswer,
   uploadArgumentAudio,
 } from "@/lib/supabase";
+import { generateQuestionChoices, evaluateArgument } from "@/lib/game-engine";
 import { playCardClick, playTimerTick } from "@/lib/audio";
 import { formatTime } from "@/lib/utils";
 import { ArgumentModal } from "./ArgumentModal";
@@ -29,6 +30,10 @@ import {
   Users,
   User,
   ImageIcon,
+  ArrowRight,
+  BookOpen,
+  Award,
+  Layers,
 } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -40,6 +45,8 @@ interface GameArenaProps {
   onExitGame: () => void;
 }
 
+const OPTION_LABELS = ["A", "B", "C", "D"];
+
 export function GameArena({
   student,
   session,
@@ -48,10 +55,10 @@ export function GameArena({
   onExitGame,
 }: GameArenaProps) {
   const [questions, setQuestions] = useState<Question[]>([]);
-  const [questionCards, setQuestionCards] = useState<GameCard[]>([]);
-  const [answerCards, setAnswerCards] = useState<GameCard[]>([]);
+  const [allQuestionsPool, setAllQuestionsPool] = useState<Question[]>([]);
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState<number>(0);
+  const [currentChoices, setCurrentChoices] = useState<GameCard[]>([]);
 
-  const [selectedQuestionCard, setSelectedQuestionCard] = useState<GameCard | null>(null);
   const [selectedAnswerCard, setSelectedAnswerCard] = useState<GameCard | null>(null);
 
   const [timeLeft, setTimeLeft] = useState<number>(timeLimitSeconds);
@@ -69,6 +76,7 @@ export function GameArena({
   // Refs to avoid stale closures in timer & async events
   const isFinishedRef = useRef(false);
   const correctAnswersRef = useRef(0);
+  const argumentScoresRef = useRef<number[]>([]);
   const timeSpentRef = useRef(0);
   const questionsRef = useRef<Question[]>([]);
   const sessionRef = useRef(session);
@@ -80,58 +88,37 @@ export function GameArena({
 
   const isUnlimited = timeLimitSeconds <= 0;
 
-  // Inisialisasi Kartu (Membaca soal dan mengacak kartu)
+  // Inisialisasi Arena: Memuat soal dan menyiapkan 4 pilihan kartu per soal
   useEffect(() => {
     async function loadCards() {
       setLoadingArena(true);
 
-      const fetchedQuestions = await getFilteredQuestions({
-        difficulty: student.difficultyLevel,
-        subject: student.subject,
-        topic: student.topic,
-      });
+      const [filtered, allPool] = await Promise.all([
+        getFilteredQuestions({
+          difficulty: student.difficultyLevel,
+          subject: student.subject,
+          topic: student.topic,
+          semester: student.semester,
+        }),
+        getFilteredQuestions({
+          subject: student.subject,
+          topic: student.topic,
+          semester: student.semester,
+        }),
+      ]);
 
       const pairsCount = student.cardPairsCount || 6;
-      const selected = fetchedQuestions.slice(0, pairsCount);
+      const selected = filtered.slice(0, pairsCount);
       setQuestions(selected);
       questionsRef.current = selected;
+      setAllQuestionsPool(allPool);
 
-      // Kartu Soal
-      const qCards: GameCard[] = selected.map((q, idx) => ({
-        id: `qcard_${q.id}_${idx}`,
-        questionId: q.id,
-        type: "question",
-        content: q.question_text,
-        imageUrl: q.question_image_url,
-        isSelected: false,
-        isMatched: false,
-        isLocked: false,
-      }));
+      if (selected.length > 0) {
+        setCurrentQuestionIndex(0);
+        const choices = generateQuestionChoices(selected[0], allPool);
+        setCurrentChoices(choices);
+      }
 
-      // Kartu Jawaban
-      const aCards: GameCard[] = selected.map((q, idx) => ({
-        id: `acard_${q.id}_${idx}`,
-        questionId: q.id,
-        type: "answer",
-        content: q.answer_text,
-        imageUrl: q.answer_image_url,
-        isSelected: false,
-        isMatched: false,
-        isLocked: false,
-      }));
-
-      // Shuffle acak
-      const shuffle = <T,>(arr: T[]): T[] => {
-        const copy = [...arr];
-        for (let i = copy.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [copy[i], copy[j]] = [copy[j], copy[i]];
-        }
-        return copy;
-      };
-
-      setQuestionCards(shuffle(qCards));
-      setAnswerCards(shuffle(aCards));
       setLoadingArena(false);
     }
 
@@ -150,8 +137,14 @@ export function GameArena({
       const pairingRatio = Math.min(1, correctCount / totalQ);
       const pairingScore = Math.round(pairingRatio * 100);
 
-      // 2. Kualitas Argumentasi: 30% (default nilai awal sistem 85 jika ada jawaban benar)
-      const argumentScore = correctCount > 0 ? 85 : 70;
+      // 2. Kualitas Argumentasi: 30% (rata-rata skor pengecekan kata kunci argumentasi)
+      const recordedScores = argumentScoresRef.current;
+      const argumentScore =
+        recordedScores.length > 0
+          ? Math.round(recordedScores.reduce((a, b) => a + b, 0) / recordedScores.length)
+          : correctCount > 0
+          ? 85
+          : 70;
 
       // 3. Aktivitas: 20% (keikutsertaan menyelesaikan soal & menyampaikan argumen)
       const activityScore = Math.round((correctCount / totalQ) * 100);
@@ -227,43 +220,48 @@ export function GameArena({
     }
   }, [timeLeft, isUnlimited, loadingArena, timeLimitSeconds, finishGame]);
 
-  // Buka Modal Argumentasi jika kedua kartu dipilih
-  useEffect(() => {
-    if (selectedQuestionCard && selectedAnswerCard) {
-      setIsArgumentModalOpen(true);
-    }
-  }, [selectedQuestionCard, selectedAnswerCard]);
+  const currentQ = questions[currentQuestionIndex];
 
-  // Handle Klik Kartu
-  const handleCardClick = (card: GameCard) => {
-    if (card.isMatched || isArgumentModalOpen || currentFeedback) return;
+  // Objek GameCard untuk kartu soal aktif
+  const activeQuestionCard: GameCard = currentQ
+    ? {
+        id: `qcard_${currentQ.id}`,
+        questionId: currentQ.id,
+        type: "question",
+        content: currentQ.question_text,
+        imageUrl: currentQ.question_image_url || null,
+        isSelected: true,
+        isMatched: false,
+        isLocked: false,
+      }
+    : {
+        id: "empty",
+        questionId: "empty",
+        type: "question",
+        content: "",
+        isSelected: false,
+        isMatched: false,
+        isLocked: false,
+      };
 
+  // Handle Klik Kartu Pilihan Jawaban
+  const handleAnswerCardClick = (card: GameCard) => {
+    if (isArgumentModalOpen || currentFeedback) return;
     playCardClick();
-
-    if (card.type === "question") {
-      if (selectedQuestionCard?.id === card.id) {
-        setSelectedQuestionCard(null);
-      } else {
-        setSelectedQuestionCard(card);
-      }
-    } else {
-      if (selectedAnswerCard?.id === card.id) {
-        setSelectedAnswerCard(null);
-      } else {
-        setSelectedAnswerCard(card);
-      }
-    }
+    setSelectedAnswerCard(card);
+    setIsArgumentModalOpen(true);
   };
 
-  // Handle Verifikasi Argumentasi
+  // Handle Verifikasi Argumentasi (Voice Note atau Teks)
   const handleVerifyArgument = async (submission: ArgumentSubmission) => {
-    if (!selectedQuestionCard || !selectedAnswerCard || !session) return;
+    if (!selectedAnswerCard || !currentQ || !session) return;
 
     setIsArgumentModalOpen(false);
 
-    // 1. Cek kecocokan kunci jawaban
-    const isCorrect = selectedQuestionCard.questionId === selectedAnswerCard.questionId;
-    const currentQ = questions.find((q) => q.id === selectedQuestionCard.questionId);
+    // 1. Cek apakah kartu jawaban yang dipilih murid adalah kartu yang tepat (bukan distractor)
+    const isCorrect =
+      selectedAnswerCard.questionId === currentQ.id &&
+      selectedAnswerCard.content.trim().toLowerCase() === currentQ.answer_text.trim().toLowerCase();
 
     // 2. Upload Audio jika jenis argumentasi adalah Voice Note
     let finalAudioUrl = submission.audioUrl;
@@ -277,12 +275,37 @@ export function GameArena({
       }
     }
 
-    const provisionalArgScore = isCorrect ? (submission.type === "voice" ? 85 : 80) : 70;
+    // 3. Evaluasi Kata Kunci Argumentasi
+    const textToEvaluate =
+      submission.type === "text" ? submission.text || "" : submission.transcript || "";
 
-    // 3. Simpan jawaban ke session_answers Supabase
+    let argumentValid: boolean | null = null;
+    let matchedKeywords: string[] = [];
+    if (textToEvaluate.trim().length > 0) {
+      const evalResult = evaluateArgument(textToEvaluate, currentQ);
+      argumentValid = evalResult.valid;
+      matchedKeywords = evalResult.matched;
+    }
+
+    let provisionalArgScore = 80;
+    if (isCorrect) {
+      if (argumentValid === true) {
+        provisionalArgScore = submission.type === "voice" ? 90 : 85;
+      } else if (argumentValid === false) {
+        // Tidak ada kata kunci yang sesuai -> argumentasi dianggap tidak sesuai
+        provisionalArgScore = 40;
+      } else {
+        provisionalArgScore = 80;
+      }
+    } else {
+      provisionalArgScore = argumentValid === false ? 30 : 55;
+    }
+    argumentScoresRef.current.push(provisionalArgScore);
+
+    // 4. Simpan jawaban ke session_answers Supabase
     await saveSessionAnswer({
       session_id: session.id,
-      question_id: selectedQuestionCard.questionId,
+      question_id: currentQ.id,
       user_answer_text: selectedAnswerCard.content,
       is_correct: isCorrect,
       argument_type: submission.type,
@@ -291,43 +314,30 @@ export function GameArena({
       argument_score: provisionalArgScore,
     });
 
-    let newMatchedCount = matchedPairsCount;
-    let newCorrectCount = correctAnswersCount;
+    const newCorrectCount = isCorrect ? correctAnswersCount + 1 : correctAnswersCount;
+    const newMatchedCount = matchedPairsCount + 1;
 
-    // 4. Update status kartu di papan jika benar
-    if (isCorrect) {
-      newMatchedCount = matchedPairsCount + 1;
-      newCorrectCount = correctAnswersCount + 1;
+    setCorrectAnswersCount(newCorrectCount);
+    setMatchedPairsCount(newMatchedCount);
+    correctAnswersRef.current = newCorrectCount;
 
-      setQuestionCards((prev) =>
-        prev.map((c) => (c.id === selectedQuestionCard.id ? { ...c, isMatched: true } : c))
-      );
-      setAnswerCards((prev) =>
-        prev.map((c) => (c.id === selectedAnswerCard.id ? { ...c, isMatched: true } : c))
-      );
-      setMatchedPairsCount(newMatchedCount);
-      setCorrectAnswersCount(newCorrectCount);
-    }
+    // 5. Cek apakah ini soal terakhir
+    const isGameOver = currentQuestionIndex >= questions.length - 1;
 
-    // 5. Cek apakah ini pasangan terakhir yang menyelesaikan permainan
-    const isGameOver = isCorrect && newMatchedCount >= questions.length;
-
-    // 6. Tampilkan Feedback Modal
+    // 6. Tampilkan Feedback Modal (jika salah, kunci dan pembahasan dirahasiakan)
     setCurrentFeedback({
       isCorrect,
-      questionText: selectedQuestionCard.content,
+      questionText: currentQ.question_text,
       chosenAnswerText: selectedAnswerCard.content,
-      correctAnswerText: currentQ?.answer_text || "",
-      explanation: currentQ?.explanation || "Penjelasan materi penguatan.",
+      correctAnswerText: isCorrect ? currentQ.answer_text : "",
+      explanation: isCorrect ? currentQ.explanation || "Penjelasan materi penguatan." : "",
       argumentType: submission.type,
       argumentContent: submission.text || "Voice Note",
       audioUrl: finalAudioUrl,
       isGameOver,
+      argumentValid,
+      matchedKeywords,
     });
-
-    // Reset pilihan kartu aktif
-    setSelectedQuestionCard(null);
-    setSelectedAnswerCard(null);
   };
 
   // Lanjut setelah menutup modal feedback
@@ -337,6 +347,17 @@ export function GameArena({
 
     if (isOver) {
       finishGame(correctAnswersRef.current, timeSpentRef.current);
+    } else {
+      // Pindah ke soal berikutnya
+      const nextIndex = currentQuestionIndex + 1;
+      setCurrentQuestionIndex(nextIndex);
+      setSelectedAnswerCard(null);
+
+      // Siapkan 4 pilihan kartu untuk soal berikutnya
+      if (questions[nextIndex]) {
+        const nextChoices = generateQuestionChoices(questions[nextIndex], allQuestionsPool);
+        setCurrentChoices(nextChoices);
+      }
     }
   };
 
@@ -348,22 +369,43 @@ export function GameArena({
           Menyiapkan Arena Kartu Make A Match...
         </h3>
         <p className="text-xs font-semibold text-slate-700 dark:text-slate-300 mt-1">
-          Mengacak kartu soal dan kartu jawaban
+          Menyiapkan pilihan kartu jawaban untuk soal aktif
         </p>
       </div>
     );
   }
 
+  if (!currentQ) {
+    return (
+      <div className="min-h-[50vh] flex flex-col items-center justify-center p-8 text-center">
+        <h3 className="text-lg font-black text-slate-900 dark:text-slate-100 mb-2">
+          Tidak ada soal yang tersedia
+        </h3>
+        <p className="text-sm font-semibold text-slate-600 dark:text-slate-400 mb-4">
+          Silakan kembali ke menu pendaftaran untuk memilih materi atau tingkat lain.
+        </p>
+        <button
+          type="button"
+          onClick={onExitGame}
+          className="px-6 py-2.5 rounded-2xl bg-emerald-600 text-white font-black text-sm"
+        >
+          Kembali ke Pendaftaran
+        </button>
+      </div>
+    );
+  }
+
   const isTimeCritical = timeLeft <= 30;
+  const progressPercent = Math.round(((currentQuestionIndex + 1) / questions.length) * 100);
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-4 sm:py-6 animate-fade-in">
       {/* Top Game Bar */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 p-4 sm:p-5 rounded-3xl bg-white dark:bg-slate-900 border-2 border-slate-200 dark:border-slate-800 shadow-sm mb-6">
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 p-4 sm:p-5 rounded-3xl bg-white dark:bg-slate-900 border-2 border-slate-200 dark:border-slate-800 shadow-sm mb-5">
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-black text-slate-950 dark:text-slate-50 text-base sm:text-lg flex items-center gap-1.5">
-              {student.playerMode === "group" ? (
+              {student.playerMode === "group" || student.playerMode === "pair" ? (
                 <Users className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
               ) : (
                 <User className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
@@ -398,10 +440,10 @@ export function GameArena({
         <div className="flex items-center justify-between sm:justify-end gap-4">
           <div className="text-left sm:text-right">
             <span className="text-[11px] text-slate-700 dark:text-slate-300 uppercase font-black block">
-              Pasangan
+              Progres Soal
             </span>
             <span className="text-xs sm:text-sm font-black text-slate-950 dark:text-slate-50">
-              {matchedPairsCount} / {questions.length} Selesai
+              Soal {currentQuestionIndex + 1} dari {questions.length}
             </span>
           </div>
 
@@ -432,153 +474,128 @@ export function GameArena({
         </div>
       </div>
 
-      {/* Arena Grid: 2 Kolom (Kartu Soal & Kartu Jawaban) */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 sm:gap-8">
-        {/* KOLOM 1: KARTU SOAL (WARNA BIRU) */}
-        <div>
-          <div className="flex items-center justify-between mb-3 px-1">
+      {/* Progress Bar Indikator Soal */}
+      <div className="w-full bg-slate-200 dark:bg-slate-800 h-2.5 rounded-full overflow-hidden mb-6 shadow-inner">
+        <div
+          className="bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-600 h-full transition-all duration-500 ease-out rounded-full"
+          style={{ width: `${progressPercent}%` }}
+        />
+      </div>
+
+      {/* Arena Grid: 2 Kolom (Sisi Kiri: Kartu Soal Aktif • Sisi Kanan: 4 Pilihan Kartu Jawaban) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 sm:gap-8 items-start">
+        {/* KOLOM 1 (5 Kolom): KARTU SOAL AKTIF (WARNA BIRU) */}
+        <div className="lg:col-span-5 space-y-3">
+          <div className="flex items-center justify-between px-1">
             <h3 className="text-xs font-black uppercase tracking-wider text-blue-900 dark:text-blue-300 flex items-center gap-2">
               <span className="w-3 h-3 rounded-full bg-blue-600 shadow-sm" />
-              <span>1. Pilih Kartu Soal</span>
+              <span>1. Kartu Soal Aktif</span>
             </h3>
-            <span className="text-xs font-black text-blue-900 dark:text-blue-300 bg-blue-100 dark:bg-blue-950/70 px-2.5 py-0.5 rounded-full border border-blue-200 dark:border-blue-800">
-              {questionCards.filter((c) => !c.isMatched).length} Tersisa
+            <span className="text-xs font-black text-blue-950 dark:text-blue-200 bg-blue-100 dark:bg-blue-950/70 px-3 py-1 rounded-full border border-blue-200 dark:border-blue-800">
+              Soal #{currentQuestionIndex + 1}
             </span>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
-            {questionCards.map((card) => {
-              const isSelected = selectedQuestionCard?.id === card.id;
-
-              return (
-                <motion.div
-                  key={card.id}
-                  whileHover={!card.isMatched ? { scale: 1.02 } : {}}
-                  whileTap={!card.isMatched ? { scale: 0.98 } : {}}
-                  onClick={() => handleCardClick(card)}
-                  className={`relative p-5 rounded-3xl border-2 cursor-pointer transition-all min-h-[145px] flex flex-col justify-between select-none ${
-                    card.isMatched
-                      ? "bg-slate-100 dark:bg-slate-850/50 border-slate-300 dark:border-slate-800 opacity-40 cursor-default"
-                      : isSelected
-                      ? "bg-blue-600 text-white border-blue-700 shadow-xl shadow-blue-600/30 scale-[1.02]"
-                      : "bg-blue-50/90 dark:bg-slate-900 border-blue-200 dark:border-blue-900 hover:border-blue-400 dark:hover:border-blue-700 shadow-sm"
-                  }`}
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <span
-                      className={`text-[10px] font-black uppercase tracking-wide px-2.5 py-0.5 rounded-full ${
-                        isSelected
-                          ? "bg-blue-500 text-white"
-                          : "bg-blue-200/80 text-blue-950 dark:bg-blue-950 dark:text-blue-200 border border-blue-300 dark:border-blue-800"
-                      }`}
-                    >
-                      Soal
+          {/* Kartu Soal Utama */}
+          <div className="relative p-6 sm:p-7 rounded-3xl border-2 border-blue-300 dark:border-blue-800 bg-gradient-to-b from-blue-50/90 to-blue-100/60 dark:from-slate-900 dark:to-blue-950/50 shadow-md flex flex-col justify-between min-h-[320px]">
+            <div>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                <span className="text-[11px] font-black uppercase tracking-wider px-3 py-1 rounded-full bg-blue-600 text-white shadow-sm">
+                  Kartu Soal
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] font-black px-2.5 py-0.5 rounded-md bg-blue-200/80 dark:bg-blue-900/60 text-blue-950 dark:text-blue-200 border border-blue-300 dark:border-blue-700">
+                    {currentQ.difficulty_level}
+                  </span>
+                  {currentQ.topic && (
+                    <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-white/80 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-blue-200 dark:border-slate-700 truncate max-w-[150px]">
+                      {currentQ.topic}
                     </span>
-                    {card.isMatched && <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
-                  </div>
-
-                  {/* Gambar Soal (Jika Tersedia) */}
-                  {card.imageUrl && (
-                    <div className="relative w-full h-24 mb-2 rounded-xl overflow-hidden border border-blue-200 dark:border-blue-800 bg-white/50">
-                      <Image
-                        src={card.imageUrl}
-                        alt="Ilustrasi Soal"
-                        fill
-                        className="object-contain p-1"
-                        unoptimized
-                      />
-                    </div>
                   )}
+                </div>
+              </div>
 
-                  <p
-                    className={`text-xs sm:text-sm font-black leading-snug line-clamp-4 ${
-                      isSelected ? "text-white" : "text-slate-950 dark:text-slate-50"
-                    }`}
-                  >
-                    {card.content}
-                  </p>
+              {/* Gambar Soal (Jika Tersedia) */}
+              {currentQ.question_image_url && (
+                <div className="relative w-full h-44 mb-4 rounded-2xl overflow-hidden border-2 border-blue-200 dark:border-blue-800 bg-white/80 dark:bg-slate-800 shadow-inner">
+                  <Image
+                    src={currentQ.question_image_url}
+                    alt="Ilustrasi Soal"
+                    fill
+                    className="object-contain p-2"
+                    unoptimized
+                  />
+                </div>
+              )}
 
-                  <div className="mt-2 text-right">
-                    <span
-                      className={`text-[10px] font-extrabold ${
-                        isSelected
-                          ? "text-blue-100"
-                          : card.isMatched
-                          ? "text-slate-400"
-                          : "text-blue-800 dark:text-blue-300"
-                      }`}
-                    >
-                      {card.isMatched
-                        ? "Tercocokkan"
-                        : isSelected
-                        ? "Terpilih"
-                        : "Ketuk untuk memilih"}
-                    </span>
-                  </div>
-                </motion.div>
-              );
-            })}
+              {/* Teks Soal */}
+              <p className="text-base sm:text-lg font-black text-slate-950 dark:text-slate-50 leading-relaxed">
+                {currentQ.question_text}
+              </p>
+            </div>
+
+            {/* Petunjuk Aksi */}
+            <div className="mt-6 pt-4 border-t-2 border-blue-200/60 dark:border-blue-800/60 flex items-center gap-2 text-xs font-bold text-blue-900 dark:text-blue-300">
+              <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+              <span>Pilih salah satu kartu jawaban di samping yang menurutmu pasangan tepat!</span>
+            </div>
           </div>
         </div>
 
-        {/* KOLOM 2: KARTU JAWABAN (WARNA HIJAU/EMERALD) */}
-        <div>
-          <div className="flex items-center justify-between mb-3 px-1">
+        {/* KOLOM 2 (7 Kolom): 4 PILIHAN KARTU JAWABAN (WARNA HIJAU/EMERALD) */}
+        <div className="lg:col-span-7 space-y-3">
+          <div className="flex items-center justify-between px-1">
             <h3 className="text-xs font-black uppercase tracking-wider text-emerald-900 dark:text-emerald-300 flex items-center gap-2">
               <span className="w-3 h-3 rounded-full bg-emerald-600 shadow-sm" />
               <span>2. Pilih Kartu Pasangan Kunci</span>
             </h3>
-            <span className="text-xs font-black text-emerald-900 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-950/70 px-2.5 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800">
-              {answerCards.filter((c) => !c.isMatched).length} Tersisa
+            <span className="text-xs font-black text-emerald-900 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-950/70 px-3 py-1 rounded-full border border-emerald-200 dark:border-emerald-800">
+              {currentChoices.length} Pilihan Jawaban
             </span>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
-            {answerCards.map((card) => {
+          {/* Grid 4 Kartu Jawaban (1 Kunci Tepat, 3 Pengecoh) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 sm:gap-4">
+            {currentChoices.map((card, idx) => {
               const isSelected = selectedAnswerCard?.id === card.id;
+              const optionLabel = OPTION_LABELS[idx] || `${idx + 1}`;
 
               return (
                 <motion.div
                   key={card.id}
-                  whileHover={!card.isMatched ? { scale: 1.02 } : {}}
-                  whileTap={!card.isMatched ? { scale: 0.98 } : {}}
-                  onClick={() => handleCardClick(card)}
-                  className={`relative p-5 rounded-3xl border-2 cursor-pointer transition-all min-h-[145px] flex flex-col justify-between select-none ${
-                    card.isMatched
-                      ? "bg-slate-100 dark:bg-slate-850/50 border-slate-300 dark:border-slate-800 opacity-40 cursor-default"
-                      : isSelected
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => handleAnswerCardClick(card)}
+                  className={`group relative p-5 rounded-3xl border-2 cursor-pointer transition-all min-h-[145px] flex flex-col justify-between select-none ${
+                    isSelected
                       ? "bg-emerald-600 text-white border-emerald-700 shadow-xl shadow-emerald-600/30 scale-[1.02]"
-                      : "bg-emerald-50/90 dark:bg-slate-900 border-emerald-200 dark:border-emerald-900 hover:border-emerald-400 dark:hover:border-emerald-700 shadow-sm"
+                      : "bg-emerald-50/80 dark:bg-slate-900 border-emerald-200 dark:border-emerald-900/60 hover:border-emerald-400 dark:hover:border-emerald-600 shadow-sm hover:shadow-md"
                   }`}
                 >
                   <div className="flex items-center justify-between mb-2">
                     <span
-                      className={`text-[10px] font-black uppercase tracking-wide px-2.5 py-0.5 rounded-full ${
+                      className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-black transition-colors ${
                         isSelected
-                          ? "bg-emerald-500 text-white"
-                          : "bg-emerald-200/80 text-emerald-950 dark:bg-emerald-950 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-800"
+                          ? "bg-white text-emerald-700 shadow-sm"
+                          : "bg-emerald-200/90 text-emerald-950 dark:bg-emerald-950 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-800"
                       }`}
                     >
-                      Jawaban
+                      {optionLabel}
                     </span>
-                    {card.isMatched && <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
+                    <span
+                      className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                        isSelected
+                          ? "bg-emerald-500 text-white"
+                          : "bg-emerald-100 text-emerald-900 dark:bg-emerald-950/80 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800"
+                      }`}
+                    >
+                      Kartu Jawaban
+                    </span>
                   </div>
 
-                  {/* Gambar Jawaban (Jika Tersedia) */}
-                  {card.imageUrl && (
-                    <div className="relative w-full h-24 mb-2 rounded-xl overflow-hidden border border-emerald-200 dark:border-emerald-800 bg-white/50">
-                      <Image
-                        src={card.imageUrl}
-                        alt="Ilustrasi Jawaban"
-                        fill
-                        className="object-contain p-1"
-                        unoptimized
-                      />
-                    </div>
-                  )}
-
+                  {/* Teks Jawaban */}
                   <p
-                    className={`text-xs sm:text-sm font-black leading-snug line-clamp-4 ${
+                    className={`text-sm sm:text-base font-black leading-snug my-2 ${
                       isSelected ? "text-white" : "text-slate-950 dark:text-slate-50"
                     }`}
                   >
@@ -587,38 +604,40 @@ export function GameArena({
 
                   <div className="mt-2 text-right">
                     <span
-                      className={`text-[10px] font-extrabold ${
+                      className={`text-[11px] font-black inline-flex items-center gap-1 ${
                         isSelected
                           ? "text-emerald-100"
-                          : card.isMatched
-                          ? "text-slate-400"
-                          : "text-emerald-800 dark:text-emerald-300"
+                          : "text-emerald-800 dark:text-emerald-400 group-hover:text-emerald-900 dark:group-hover:text-emerald-300"
                       }`}
                     >
-                      {card.isMatched
-                        ? "Tercocokkan"
-                        : isSelected
-                        ? "Terpilih"
-                        : "Ketuk untuk mencocokkan"}
+                      <span>Ketuk untuk memilih</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
                     </span>
                   </div>
                 </motion.div>
               );
             })}
           </div>
+
+          {/* Banner Info Bantuan */}
+          <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border-2 border-amber-200 dark:border-amber-800/60 text-xs font-bold text-amber-950 dark:text-amber-200 flex items-center gap-2.5">
+            <Layers className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
+            <span>
+              Perhatikan baik-baik: Ada kartu jawaban yang benar dan ada kartu pengecoh yang salah. Setelah memilih kartu, kamu akan diminta menyampaikan alasan/argumenmu!
+            </span>
+          </div>
         </div>
       </div>
 
-      {/* MODAL ARGUMENTASI INTERAKTIF */}
-      {isArgumentModalOpen && selectedQuestionCard && selectedAnswerCard && (
+      {/* MODAL ARGUMENTASI INTERAKTIF (Make A Match Digital) */}
+      {isArgumentModalOpen && selectedAnswerCard && (
         <ArgumentModal
           isOpen={isArgumentModalOpen}
-          questionCard={selectedQuestionCard}
+          questionCard={activeQuestionCard}
           answerCard={selectedAnswerCard}
           onVerify={handleVerifyArgument}
           onCancel={() => {
             setIsArgumentModalOpen(false);
-            setSelectedQuestionCard(null);
             setSelectedAnswerCard(null);
           }}
         />

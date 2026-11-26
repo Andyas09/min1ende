@@ -8,7 +8,7 @@ import { supabase, isSupabaseConfigured } from "@/lib/supabase";
 interface TeacherAuthModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSuccess: (teacherInfo: { email: string; name: string }) => void;
+  onSuccess: (teacherInfo: { email: string; name: string; role?: "admin" | "guru"; subject?: string }) => void;
 }
 
 export function TeacherAuthModal({ isOpen, onClose, onSuccess }: TeacherAuthModalProps) {
@@ -26,11 +26,17 @@ export function TeacherAuthModal({ isOpen, onClose, onSuccess }: TeacherAuthModa
     setLoading(true);
 
     try {
+      const cleanEmail = email.trim().toLowerCase();
+      // admin@min1ende.com otomatis berstatus administrator
+      const isAdminEmail = cleanEmail === "admin@min1ende.com";
+
       if (!isSupabaseConfigured()) {
-        if (email.trim() && password.trim()) {
+        if (cleanEmail && password.trim()) {
           onSuccess({
-            email,
-            name: email.split("@")[0] || "Guru MIN 1 Ende",
+            email: cleanEmail,
+            name: isAdminEmail ? "Administrator MIN 1 Ende" : cleanEmail.split("@")[0] || "Guru MIN 1 Ende",
+            role: isAdminEmail ? "admin" : "guru",
+            subject: "Semua Mapel",
           });
           onClose();
           return;
@@ -39,18 +45,81 @@ export function TeacherAuthModal({ isOpen, onClose, onSuccess }: TeacherAuthModa
         }
       }
 
+      // 1. Untuk akun bukan admin utama, cek tabel profiles Supabase terlebih dahulu agar tidak memicu 400 di auth/token
+      if (!isAdminEmail) {
+        const { data: profileUser, error: profileErr } = await (supabase.from("profiles") as any)
+          .select("*")
+          .ilike("email", cleanEmail)
+          .eq("password", password)
+          .maybeSingle();
+
+        if (!profileErr && profileUser) {
+          onSuccess({
+            email: profileUser.email || cleanEmail,
+            name: profileUser.full_name || "Guru MIN 1 Ende",
+            role: profileUser.role === "admin" ? "admin" : "guru",
+            subject: profileUser.subject || "Semua Mapel",
+          });
+          onClose();
+          return;
+        }
+      }
+
+      // 2. Login via Supabase Auth resmi (untuk Administrator atau akun yang terdaftar di auth.users)
       const { data, error } = await supabase.auth.signInWithPassword({
-        email,
+        email: cleanEmail,
         password,
       });
 
-      if (error) throw error;
+      if (!error && data?.user) {
+        let userRole: "admin" | "guru" = isAdminEmail ? "admin" : "guru";
+        let userSubject = "Semua Mapel";
+        try {
+          const { data: prof } = await (supabase.from("profiles") as any)
+            .select("role, full_name, subject")
+            .eq("id", data.user.id)
+            .single();
 
-      onSuccess({
-        email: data.user.email || email,
-        name: data.user.user_metadata?.full_name || "Guru MIN 1 Ende",
-      });
-      onClose();
+          if (prof?.role === "admin" || isAdminEmail) {
+            userRole = "admin";
+          }
+          if (prof?.subject) {
+            userSubject = prof.subject;
+          }
+        } catch (err) {
+          console.warn("Gagal fetch profile role & subject:", err);
+        }
+
+        onSuccess({
+          email: data.user.email || cleanEmail,
+          name: data.user.user_metadata?.full_name || (isAdminEmail ? "Administrator MIN 1 Ende" : "Guru MIN 1 Ende"),
+          role: userRole,
+          subject: userSubject,
+        });
+        onClose();
+        return;
+      }
+
+      // 3. Fallback cek tabel profiles (misal jika admin mengubah password di tabel profiles)
+      const { data: profileUser, error: profileErr } = await (supabase.from("profiles") as any)
+        .select("*")
+        .ilike("email", cleanEmail)
+        .eq("password", password)
+        .maybeSingle();
+
+      if (!profileErr && profileUser) {
+        onSuccess({
+          email: profileUser.email || cleanEmail,
+          name: profileUser.full_name || "Guru MIN 1 Ende",
+          role: profileUser.role === "admin" || isAdminEmail ? "admin" : "guru",
+          subject: profileUser.subject || "Semua Mapel",
+        });
+        onClose();
+        return;
+      }
+
+      // Jika tidak ditemukan di database Supabase
+      throw new Error("Email atau kata sandi tidak cocok di database Supabase. Silakan periksa kembali.");
     } catch (err: any) {
       console.error("Login error:", err);
       setErrorMsg(err.message || "Gagal masuk. Periksa kembali email dan password.");
